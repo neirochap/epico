@@ -6,6 +6,7 @@ Triggered by `/epico:epico init`. Interactive wizard to set up project configura
 
 - [Procedure](#procedure)
 - [Rules](#rules)
+- [The reuse profile](#the-reuse-profile)
 - [Versioning Policy](#versioning-policy)
 
 ## Procedure
@@ -49,6 +50,7 @@ Triggered by `/epico:epico init`. Interactive wizard to set up project configura
 
 4. **Generate files** — create all requested files with sensible defaults based on scan
 4a. **Write the managed `CLAUDE.md` block** — `epico-claude-md write`, after the constitution exists, since the block is built from it ([The managed CLAUDE.md block](#the-managed-claudemd-block)). Interactively, when a `CLAUDE.md` already exists, say in one line that the block is appended at its end and nothing else in it changes, and ask once; headless, append it
+4b. **Write the reuse profile** — when `.epico/reuse-profile.json` is absent ([The reuse profile](#the-reuse-profile)). An existing profile is never touched
 5. **Ask the versioning-policy question** — measure first, offer exactly two options, then write the chosen state. Defined once, below: [Versioning Policy](#versioning-policy). A non-interactive run never asks and never starts tracking
 6. **Report** — list all files created, and name the policy that was recorded
 
@@ -70,9 +72,24 @@ Triggered by `/epico:epico init`. Interactive wizard to set up project configura
 - **An `AGENTS.md`:** one `@AGENTS.md` line goes before the block, once, so both are read.
 - **Refreshed, never edited:** `init --repair` rewrites the block from the current constitution; a hand edit inside the markers is lost on the next repair, so project-specific rules go in the constitution or outside the block.
 
+## The reuse profile
+
+`.epico/reuse-profile.json` tells `epico-check` which validation results may be reused ([check-reuse.md](check-reuse.md)). It is JSON, never YAML, and `epico-check` only reads it: init is the one writer. Init and `init --repair` write it only when the file is absent, never over an existing one.
+
+1. Run `epico-check profile --detect`. It prints the proposal (`tools`, `inputs`) and writes nothing.
+2. Show the proposal in one line, e.g. `Reuse profile proposed: tools [node --version], inputs [apps/api/.env.test], mode shadow.`
+3. Ask once for the **never-reuse** commands — checks that need credentials, docker, a database or a live service. Ask in Brazilian Portuguese like every other question. Each answer is a literal substring of the check command and goes into `never`. An empty answer, or a non-interactive run, leaves `never` empty and asks nothing.
+4. Write `.epico/reuse-profile.json` with `mode: shadow`:
+
+   ```json
+   {"version": 1, "mode": "shadow", "tools": ["node --version"], "inputs": ["apps/api/.env.test"], "never": []}
+   ```
+
+`shadow` runs every check and records what would have been reused; `on` really skips and `off` records nothing. Init never writes `on`: the requester switches by hand after reading `epico-check stats`. `epico-doctor` warns `no reuse profile — run /epico:epico init --repair` while the file is missing.
+
 ## Repair (`init --repair`)
 
-Re-runs steps 1, 2 and 4a against what exists and writes only what is missing or stale: the managed `CLAUDE.md` block, a constitution section the doctor reports absent (asked for interactively, never invented). It never overwrites a file, never re-asks the versioning-policy question when `.gitpolicy` exists, and ends with `epico-doctor --summary`.
+Re-runs steps 1, 2 and 4a against what exists and writes only what is missing or stale: the managed `CLAUDE.md` block, a constitution section the doctor reports absent (asked for interactively, never invented), and `.epico/reuse-profile.json` when the project has none (step 4b: `epico-check profile --detect`, the one-line proposal, the one never-reuse question, written in mode `shadow`). It never overwrites a file, never re-asks the versioning-policy question when `.gitpolicy` exists, and ends with `epico-doctor --summary`.
 
 ## Versioning Policy
 

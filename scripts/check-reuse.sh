@@ -5,8 +5,7 @@
 # Usage: bash scripts/check-reuse.sh run [--fresh] [--timeout <s>] -- <command>
 #        bash scripts/check-reuse.sh lookup -- <command>
 #        bash scripts/check-reuse.sh stats
-#        (profile --detect arrives in a later sub-task of story 030; until then
-#         it is refused as a usage error)
+#        bash scripts/check-reuse.sh profile --detect
 #
 # Exit 0 = done (for `run`: the command passed)
 # Exit 1 = refused / (for `run`: the command failed)
@@ -57,6 +56,14 @@
 # ledger.json.unreadable-<UTC stamp> (never replacing an earlier copy) and the
 # run goes on as if nothing were recorded. A failure to record or to set aside
 # warns on stderr and changes neither the verdict nor the exit code.
+#
+# `profile --detect` prints a proposed profile and writes nothing: one version
+# probe per toolchain whose manifest is in the project's top level AND whose binary
+# is on PATH, and as `inputs` the gitignored .env, .env.*, .dev.vars and
+# *.local.{json,yaml,yml,toml,php} files outside node_modules/ and vendor/. `never`
+# is left empty: which commands need credentials, docker or a live service is a
+# judgement made at init. A manifest it cannot parse, or a directory that is not a
+# git work tree, loses only what depends on it, with a warning on stderr and exit 0.
 #
 # `stats` summarises the shadow log: {runs, would_reuse, agreed, disagreed,
 # secs_reusable}. A disagreement is a run that would have been reused as a PASS
@@ -116,7 +123,7 @@
 
 set -euo pipefail
 
-USAGE='Usage: check-reuse.sh run [--fresh] [--timeout <s>] -- <command> | lookup -- <command>'
+USAGE='Usage: check-reuse.sh run [--fresh] [--timeout <s>] -- <command> | lookup -- <command> | stats | profile --detect'
 
 usage_error() {
   printf '%s\n' "$1" >&2
@@ -888,6 +895,92 @@ cmd_stats() {
       }' <"$log"
 }
 
+# --- profile --detect ---------------------------------------------------------
+
+DETECT_TOOLS=""    # one probe per line
+DETECT_INPUTS=""   # one path per line
+
+# add_probe <probe> — only when the probe's binary is on PATH, and once.
+add_probe() {
+  local probe="$1" bin="${1%% *}"
+
+  command -v "$bin" >/dev/null 2>&1 || return 0
+  case $'\n'"$DETECT_TOOLS" in *$'\n'"$probe"$'\n'*) return 0 ;; esac
+  DETECT_TOOLS+="$probe"$'\n'
+}
+
+# has_manifest <glob> — a manifest by name or glob, at the project's top level.
+has_manifest() {
+  (cd "$DETECT_BASE" && compgen -G "$1" >/dev/null 2>&1)
+}
+
+DETECT_BASE=""
+
+cmd_profile() {
+  local pm name f base_name
+
+  [ "$#" -eq 1 ] && [ "$1" = "--detect" ] || usage_error "profile takes --detect and nothing else"
+
+  # The top level when there is a work tree, else the current directory: the
+  # manifests are read from there.
+  TOP=$(git rev-parse --show-toplevel 2>/dev/null) || TOP=""
+  DETECT_BASE="${TOP:-$PWD}"
+
+  # --- tools: one probe per toolchain whose manifest exists and whose binary is
+  # on PATH. The probe text is what the key runs later with `bash -c`.
+  if has_manifest package.json; then
+    add_probe "node --version"
+    if pm=$(jq -er '.packageManager // empty' "$DETECT_BASE/package.json" 2>/dev/null) && [ -n "$pm" ]; then
+      name="${pm%%@*}"
+      # The value comes from a file in the repository and ends up in a command:
+      # only a plain tool name is accepted.
+      case "$name" in
+        '' | *[!A-Za-z0-9._-]*) warn "package.json packageManager is not a plain tool name; its probe is skipped" ;;
+        *) add_probe "$name --version" ;;
+      esac
+    elif ! jq -e . "$DETECT_BASE/package.json" >/dev/null 2>&1; then
+      warn "package.json is not valid JSON; the packageManager probe is skipped"
+    fi
+  fi
+  if has_manifest go.mod; then add_probe "go version"; fi
+  if has_manifest Cargo.toml; then add_probe "rustc --version"; fi
+  if has_manifest pyproject.toml || has_manifest 'requirements*.txt'; then add_probe "python3 --version"; fi
+  if has_manifest composer.json; then add_probe "php --version"; fi
+  if has_manifest 'build.gradle*' || has_manifest pom.xml; then add_probe "java -version"; fi
+  if has_manifest Gemfile; then add_probe "ruby --version"; fi
+  if has_manifest 'deno.json*'; then add_probe "deno --version"; fi
+
+  # --- inputs: gitignored environment and local-configuration files outside
+  # dependency directories. The two greps run at C speed over a list that can
+  # hold tens of thousands of dependency files; the loop sees only what is left.
+  if [ -n "$TOP" ]; then
+    while IFS= read -r -d '' f; do
+      case "$f" in *$'\n'*) continue ;; esac
+      base_name="${f##*/}"
+      case "$base_name" in
+        .env | .env.* | .dev.vars | *.local.json | *.local.yaml | *.local.yml | *.local.toml | *.local.php)
+          DETECT_INPUTS+="$f"$'\n'
+          ;;
+      esac
+    done < <(git -C "$TOP" ls-files -z --others --ignored --exclude-standard 2>/dev/null |
+      { grep -zvE '(^|/)(node_modules|vendor)/' || true; } |
+      { grep -zE '(^|/)(\.env|\.env\.[^/]*|\.dev\.vars|[^/]*\.local\.(json|yaml|yml|toml|php))$' || true; })
+  else
+    warn "not a git work tree: no inputs are proposed"
+  fi
+
+  jq -n \
+    --arg tools "$DETECT_TOOLS" \
+    --arg inputs "$(printf '%s' "$DETECT_INPUTS" | LC_ALL=C sort -u)" \
+    '{
+      version: 1,
+      mode: "shadow",
+      tools: ($tools | split("\n") | map(select(length > 0))),
+      inputs: ($inputs | split("\n") | map(select(length > 0))),
+      never: []
+    }'
+}
+
 [ "$#" -gt 0 ] || usage_error "a subcommand is required"
 
 sub="$1"
@@ -896,6 +989,6 @@ case "$sub" in
   lookup) cmd_lookup "$@" ;;
   run) cmd_run "$@" ;;
   stats) cmd_stats "$@" ;;
-  profile) usage_error "'$sub' is not available yet" ;;
+  profile) cmd_profile "$@" ;;
   *) usage_error "unknown subcommand: $sub" ;;
 esac

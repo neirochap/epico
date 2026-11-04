@@ -8,6 +8,8 @@ setup() {
   mkdir -p "$E/stories"
   printf '# Constitution\n\n## Defaults\n\n- x\n\n## Quality\n\n- y\n' > "$E/constitution.md"
   printf 'tracked-md\n' > "$E/.gitpolicy"
+  # A healthy tree carries its reuse profile; its absence is tests/reuse-profile-init.bats.
+  printf '{"version": 1, "mode": "shadow", "tools": [], "inputs": [], "never": []}\n' > "$E/reuse-profile.json"
   bash "$PLUGIN_ROOT/scripts/claude-md.sh" write --root "$WORK" >/dev/null
 }
 

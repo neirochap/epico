@@ -8,7 +8,8 @@
 #   warning — drift that degrades a mode without breaking it: EPICO.md absent
 #             or behind the disk, no .gitpolicy, archived stories with no
 #             manifest, a leftover .draft/red-scratch/, an untracked .epico/
-#             copy inside a git worktree, a dormant draft, and a stall.
+#             copy inside a git worktree, a dormant draft, a stall, and no
+#             .epico/reuse-profile.json (init --repair writes it).
 #
 # .draft/meta.yaml is required only while a story has no tasks.md: it is the
 # planning record, and a planned story whose .draft/ was cleaned up is healthy.
@@ -125,6 +126,10 @@ if [ -f "$ROOT/CLAUDE.md" ] || [ -f "$EPICO_DIR/constitution.md" ]; then
     fi
   fi
 fi
+
+# The reuse profile is read-only for epico-check and written only by init; its
+# absence means shadow mode with empty lists, so it is a warning, never an error.
+[ -f "$EPICO_DIR/reuse-profile.json" ] || add warning reuse-profile .epico/reuse-profile.json "no reuse profile — run /epico:epico init --repair"
 
 # --- Stories ---
 NOW=$(date +%s)
