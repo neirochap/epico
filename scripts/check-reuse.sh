@@ -98,8 +98,9 @@
 # gitignored while holding a tracked file). It is a git tree id, computed on a
 # COPY of the real index, so the real index is never touched:
 #   1. copy the real index (`git rev-parse --git-path index`, worktree-aware)
-#      into a temp file — the copy keeps git's stat cache, an empty temp index
-#      would re-hash the whole tree;
+#      into a temp file, modification time included (`cp -p`) — the copy keeps
+#      git's stat cache and its protection against racily clean entries, an empty
+#      temp index would re-hash the whole tree;
 #   2. `git add -A -- .` on the copy;
 #   3. `git rm -r -q --cached --ignore-unmatch -- .epico .epic` on the copy;
 #   4. `git write-tree` on the copy.
@@ -184,7 +185,11 @@ fingerprint() {
     return 0
   fi
   if [ -f "$gitidx" ]; then
-    if ! cp -- "$gitidx" "$IDX"; then
+    # -p keeps the real index's mtime. Git decides whether a recorded stat can be
+    # trusted by comparing each entry's mtime with the index file's own mtime
+    # ("racily clean"); a copy with a fresh mtime switches that off, and a
+    # same-size edit made in the second the index was written goes unseen.
+    if ! cp -p -- "$gitidx" "$IDX"; then
       FP_REASON="the git index could not be copied"
       return 0
     fi
