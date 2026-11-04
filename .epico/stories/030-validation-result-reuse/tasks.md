@@ -383,11 +383,11 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
 
   - Commit: "docs(030): document epico-check, the reuse profile and git 2.31"
 
-- [ ] 10 - Regression guards for the review findings
+- [x] 10 - Regression guards for the review findings
   - _Complexity: Moderate | Tests: Integration | Risks: a guard that cannot fail proves nothing; the fixes shipped before their tests | Dependencies: Task 3, Task 6_
   - Objective: every defect the technical review found has a permanent test, and each test is shown to fail when its fix is removed
 
-  - [ ] 10.1 - Concurrency, signals and a command that cannot start
+  - [x] 10.1 - Concurrency, signals and a command that cannot start
     - Context:
       - Files: `scripts/check-reuse.sh` (`ledger_lock`, `ledger_record`, `ledger_write`, `run_command`, `cleanup`), `tests/lib/reuse-fixture.sh`, `.draft/reports/tech-review-3.x.md`
     - Objective: an older PASS never replaces a newer FAIL, a terminated runner leaves no command behind, and a command that cannot start records nothing
@@ -399,7 +399,7 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Requirements: R2.15, R2.16, R4.8
     - Quality: Q1, Q2, Q3, Q8
 
-  - [ ] 10.2 - Hostile probes, profiles and inputs
+  - [x] 10.2 - Hostile probes, profiles and inputs
     - Context:
       - Files: `scripts/check-reuse.sh` (`load_profile`, `run_probe`, `build_key`), `tests/lib/reuse-fixture.sh`, `.draft/reports/tech-review-2.1-2.2.md`
     - Objective: no probe, profile or input can leave the key unchanged when the environment changed, or break the runner
@@ -411,7 +411,7 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Requirements: R2.5, R2.11, R2.13, R4.4
     - Quality: Q1, Q2, Q3, Q11
 
-  - [ ] 10.3 - Ledger, shadow log, stats and fingerprint edges
+  - [x] 10.3 - Ledger, shadow log, stats and fingerprint edges
     - Context:
       - Files: `scripts/check-reuse.sh` (`ledger_write`, `shadow_append`, `cmd_stats`, `cmd_lookup`, `fingerprint`, `cmd_profile`), `tests/lib/reuse-fixture.sh`, `.draft/reports/tech-review-3.x.md`
     - Objective: the bounded files, the summary and the fingerprint keep their promises at their edges
@@ -423,7 +423,7 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Requirements: R2.11, R3.2, R3.4, R4.3, R5.1
     - Quality: Q1, Q2, Q3, Q8
 
-  - [ ] 10.4 - The whole local check again
+  - [x] 10.4 - The whole local check again
     - Context:
       - Files: `RELEASING.md` (the local recipe)
     - Objective: the new tests join a suite that passes as a whole
