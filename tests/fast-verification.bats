@@ -70,6 +70,10 @@ result() {  # <id> — the result the run recorded for one entry
   jq -r --arg i "$1" '.entries[] | select(.id == $i or (.id | startswith($i))) | .result' "$STORY/.draft/validation-run.json" | head -1
 }
 
+full_run() {  # --only needs a previous run: record one before revalidating
+  run bash "$ROOT/scripts/validate-run.sh" --story "$STORY"
+}
+
 @test "validate-run: runs commands, judges prose, skips [~], ignores [ ]" {
   run bash "$ROOT/scripts/validate-run.sh" --story "$STORY"
   [ "$status" -eq 1 ]
@@ -118,6 +122,7 @@ result() {  # <id> — the result the run recorded for one entry
 }
 
 @test "validate-run: a hanging command fails at its timeout" {
+  full_run
   sed -i 's/`true` exits 0/`sleep 5` exits 0/' "$STORY/tasks.md"
   run bash "$ROOT/scripts/validate-run.sh" --story "$STORY" --only 1.1 --timeout 1
   [ "$(result 1.1)" = FAIL ]
@@ -193,6 +198,7 @@ result() {  # <id> — the result the run recorded for one entry
 }
 
 @test "validate-run: a command that backgrounds a server returns, and the server is killed" {
+  full_run
   sed -i 's/`true` exits 0/`sleep 30 \& echo $! > server.pid` exits 0/' "$STORY/tasks.md"
   SECONDS=0
   run bash "$ROOT/scripts/validate-run.sh" --story "$STORY" --only 1.1 --timeout 20
@@ -206,6 +212,7 @@ result() {  # <id> — the result the run recorded for one entry
 }
 
 @test "validate-run: a Validation with two commands runs the first and leaves the rest to JUDGE" {
+  full_run
   sed -i 's/`true` exits 0/`true` and, with the server running, `curl -fsS localhost:1` returns the page/' "$STORY/tasks.md"
   run bash "$ROOT/scripts/validate-run.sh" --story "$STORY" --only 1.1
   [ "$(result 1.1)" = JUDGE ]
@@ -216,6 +223,7 @@ result() {  # <id> — the result the run recorded for one entry
 }
 
 @test "validate-run: cargo's per-binary summaries are added up, not cut to the doc-test line" {
+  full_run
   cat > "$PROJ/fake-cargo.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'running 30 tests\ntest result: ok. 30 passed; 0 failed; 0 ignored\n\nrunning 3 tests\ntest result: ok. 3 passed; 0 failed; 0 ignored\n\n   Doc-tests app\nrunning 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored\n'
@@ -227,6 +235,7 @@ SH
 }
 
 @test "validate-run: a command holding a <placeholder> is JUDGE, never run" {
+  full_run
   sed -i 's/`true` exits 0/`touch ran-it \&\& false -j <job>` for each job/' "$STORY/tasks.md"
   sed -i 's/^- \[ \] Secrets: `true` reports no leaks/- [x] CI mirror: `act -j <job>` for each job/' "$STORY/tasks.md"
   run bash "$ROOT/scripts/validate-run.sh" --story "$STORY" --only 1.1,gate:CI
@@ -236,6 +245,7 @@ SH
 }
 
 @test "validate-run: shell redirection is not a placeholder" {
+  full_run
   sed -i 's/`true` exits 0/`true <\/dev\/null >\/dev\/null` exits 0/' "$STORY/tasks.md"
   run bash "$ROOT/scripts/validate-run.sh" --story "$STORY" --only 1.1
   [ "$(result 1.1)" = PASS ]

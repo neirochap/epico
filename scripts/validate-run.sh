@@ -171,6 +171,12 @@ check() {  # <kind> <id> <box> <value> <tests> <commit> <whole text if compound>
     '{kind: $kind, id: $id, result: $result, qualifier: (if $q == "" then null else $q end), detail: $detail}'
 }
 
+# --only keeps the entries of a previous run; with none there is nothing to keep,
+# and a report built from the named entries alone would pass a story on a fraction
+# of its checks. Refuse before anything is run or written.
+if [ -n "$ONLY" ] && [ ! -f "$JSON" ]; then
+  echo "validate-run.sh: --only needs a previous full run; run without --only first" >&2; exit 2
+fi
 PREV='[]'
 [ -n "$ONLY" ] && [ -f "$JSON" ] && PREV="$(jq -c '.entries' "$JSON")"
 NEW="$(entries | while IFS=$'\x1f' read -r kind id box val tst cmt more; do
