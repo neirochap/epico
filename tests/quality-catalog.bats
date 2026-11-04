@@ -72,7 +72,7 @@ has() { # has <label> <block> <keyword>
   has "C3 field row" "$fields" "| Quality |"
   gates=$(section "$f" '^### Generated Quality Gates' '^### ')
   [ -n "$gates" ]
-  has "C3 one box per line" "$gates" "one box per line"
+  has "C3 one or more boxes per line" "$gates" "one or more boxes per"
   has "C3 command" "$gates" "command"
   rules=$(section "$f" '^## Rules' '^## ')
   has "C3 rule 12" "$rules" "12. [*][*]Quality coverage"

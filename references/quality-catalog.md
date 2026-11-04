@@ -103,6 +103,18 @@ Costly or narrow; activated only by a requirement that names them.
 - Q12: Contract tests — the three frontends validate against `openapi.yaml` (request: three consumers)
 ```
 
-Number in catalog order, one command per line, the reason on the line when the item is a context or on-request one. A sub-task that exercises an item cites it — `- Quality: Q2, Q7` beside `Requirements:`. The Quality Gates section of `tasks.md` then carries one box per line, `- [ ] Q2 — Lint: golangci-lint run ./... exits 0`, after the five fixed gates, and validate settles each by running its command ([validate-mode.md](validate-mode.md)). The first backtick span of a gate is the whole command validate runs, so write it complete: every argument inside the span, no `<placeholder>`, and a check over several targets or jobs as one command that loops over them — `for t in a b; do tool "$t" || exit 1; done` — never a command in one span and its arguments in the next. A span validate cannot run whole is run in part and reads as the check failing. `cross-reference.sh` reports the legend's coverage: a `Qn` no sub-task cites is an orphan; a cited `Qn` the legend does not declare is a phantom.
+Number in catalog order, one command per line, the reason on the line when the item is a context or on-request one. A sub-task that exercises an item cites it — `- Quality: Q2, Q7` beside `Requirements:`. The Quality Gates section of `tasks.md` then carries one box per line, `- [ ] Q2 — Lint: golangci-lint run ./... exits 0`, after the five fixed gates, and validate settles each by running its command ([validate-mode.md](validate-mode.md)). The first backtick span of a gate is the whole command validate runs, so write it complete: every argument inside the span, no `<placeholder>`, and a check over several targets or jobs as one gate line per target, sharing the legend's `Qn`, each with distinct text before the colon (`- [ ] Q5 — Unit tests (api): <command>` and `- [ ] Q5 — Unit tests (web): <command>`), so each target is closed by its own prefix and reused on its own — never a command in one span and its arguments in the next. A span validate cannot run whole is run in part and reads as the check failing. `cross-reference.sh` reports the legend's coverage: a `Qn` no sub-task cites is an orphan; a cited `Qn` the legend does not declare is a phantom.
+
+### Gates and caches
+
+A gate never switches a tool's own result cache off — a cached pass is the tool's own proof, and defeating it makes the gate slow and its result impossible to reuse. Name tool and flag together, never a bare flag:
+
+- turbo: `TURBO_FORCE` or `--force`
+- nx: `--skip-nx-cache`
+- jest: `--no-cache`
+- pytest: `--cache-clear`
+- gradle: `--rerun-tasks` or `--no-build-cache`
+
+`go test -count=1` is only for tests that read external state (a database, the network); everywhere else leave Go's test cache on. Prefer incremental modes (Stryker `incremental`) to a full re-run. No gate runs a command another gate already runs: a `make test` that already runs the unit suite does not sit beside a `make test-unit` gate — keep one. Examples stay generic; they never name a real project.
 
 **To a layperson the legend is rendered as the checks that were run**, each named by what it checked — "I checked the code for known mistakes", "I checked the libraries for known security problems" — never by identifier ([plain-register.md](plain-register.md)).

@@ -270,7 +270,7 @@ Format: a bullet list of 1-3 observable-behavior statements, placed in the sub-t
 
 ### Generated Quality Gates
 
-The five gates in the template are fixed. After them, the section carries **one box per line of the story's `## Quality Requirements` legend** ([quality-catalog.md](quality-catalog.md)), written as `- [ ] Qn — <item>: <command>` — the identifier, the item's name and the command that proves it, so the box settles by running the command and nothing else. They are generated from the legend when `tasks.md` is written, in legend order, and never hand-added: a gate with no legend line is a phantom, a legend line with no gate is a generation defect. Validate settles a generated gate by running its command ([validate-mode.md](validate-mode.md)); a layperson sees each as the check it ran, never by identifier ([plain-register.md](plain-register.md)).
+The five gates in the template are fixed. After them, the section carries **one or more boxes per line of the story's `## Quality Requirements` legend — one per target** ([quality-catalog.md](quality-catalog.md)), written as `- [ ] Qn — <item>: <command>` — the identifier, the item's name and the command that proves it, so the box settles by running the command and nothing else. They are generated from the legend when `tasks.md` is written, in legend order, and never hand-added: a gate with no legend line is a phantom, a legend line with no gate is a generation defect. Validate settles a generated gate by running its command ([validate-mode.md](validate-mode.md)); a layperson sees each as the check it ran, never by identifier ([plain-register.md](plain-register.md)).
 
 ### Complexity Guide
 
