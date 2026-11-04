@@ -31,7 +31,10 @@ teardown() { reuse_teardown; }
   printf 'echo two\n' > src/app.sh
   touch -t 202601010001.00 src/app.sh
   # Sanity: git itself, reading the real index, sees the edit.
-  ! git --no-optional-locks diff --quiet -- src/app.sh || false
+  if git --no-optional-locks diff --quiet -- src/app.sh; then
+    echo "git does not see the edit: the case has not set the race up"
+    return 1
+  fi
   f2=$(fp_now)
   is_hash "$f2"
   [ "$f1" != "$f2" ]
