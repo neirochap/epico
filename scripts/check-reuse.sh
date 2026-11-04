@@ -4,8 +4,9 @@
 #
 # Usage: bash scripts/check-reuse.sh run [--fresh] [--timeout <s>] -- <command>
 #        bash scripts/check-reuse.sh lookup -- <command>
-#        (stats and profile arrive in later sub-tasks of story 030; until then
-#         they are refused as usage errors)
+#        bash scripts/check-reuse.sh stats
+#        (profile --detect arrives in a later sub-task of story 030; until then
+#         it is refused as a usage error)
 #
 # Exit 0 = done (for `run`: the command passed)
 # Exit 1 = refused / (for `run`: the command failed)
@@ -33,6 +34,33 @@
 #   key          string | null          as for `lookup`
 #   reason       string                 why no reuse was possible; "" when none
 # Exit 0 on PASS, 1 on FAIL, 2 on a usage error (no JSON, nothing run).
+#
+# THE DECISION (the profile's `mode`; shadow when there is no profile):
+#   off      runs, records nothing.
+#   shadow   runs every check, records its result, and appends one line to the
+#            shadow log saying whether the ledger already held a PASS for the key
+#            (`would_reuse`). Nothing is ever skipped.
+#   on       a PASS recorded for the same key is returned as decision "reused",
+#            without running the command.
+# In every mode a command is run, and nothing is recorded for it, when it holds an
+# entry of the profile's `never` list (a literal substring), when there is no
+# fingerprint, or when there is no key. `--fresh` always runs and replaces the
+# recorded result. Only a PASS is ever a hit; a FAIL is recorded, never reused.
+#
+# THE LEDGER is <git-common-dir>/epico/reuse/ledger.json, shared by every
+# worktree of the repository and never committed:
+#   {"version": 1, "entries": {<key>: {command, result, fingerprint, at, secs}}}
+# capped at 2000 entries (the oldest `at` goes first). The shadow log beside it is
+# JSON lines {at, command, key, would_reuse, result, secs}, capped at 5000. Both
+# are written through a temp file and a rename. A ledger that is not valid JSON,
+# has the wrong shape or another version is renamed to
+# ledger.json.unreadable-<UTC stamp> (never replacing an earlier copy) and the
+# run goes on as if nothing were recorded. A failure to record or to set aside
+# warns on stderr and changes neither the verdict nor the exit code.
+#
+# `stats` summarises the shadow log: {runs, would_reuse, agreed, disagreed,
+# secs_reusable}. A disagreement is a run that would have been reused as a PASS
+# and failed when it ran: {command, at}.
 #
 # `lookup -- <command>` runs nothing and reports what `run` would decide:
 #   mode         "shadow" | "on" | "off" — the project's reuse mode (shadow until
@@ -96,14 +124,25 @@ usage_error() {
 }
 
 IDX=""         # the temporary copy of the index
+LEDGER_TMP=""  # the ledger being written, before its rename
+SHADOW_TMP=""  # the shadow log being trimmed, before its rename
 PROBE_TMP=""   # the file a probe's output is captured in
 RUN_LOG=""     # the file the checked command's output is captured in
 RUN_SID=""     # the file the command's session leader writes its pid to
+LOCK_DIR=""    # the ledger lock this run holds
 cleanup() {
+  # A signal to the runner must not leave the checked command running in its own
+  # session until its timeout.
+  if [ -n "$RUN_SID" ] && [ -s "$RUN_SID" ]; then
+    kill -TERM -- "-$(cat -- "$RUN_SID" 2>/dev/null)" 2>/dev/null || true
+  fi
+  if [ -n "$LOCK_DIR" ]; then rmdir -- "$LOCK_DIR" 2>/dev/null || true; fi
   if [ -n "$IDX" ]; then rm -f -- "$IDX"; fi
   if [ -n "$PROBE_TMP" ]; then rm -f -- "$PROBE_TMP"; fi
   if [ -n "$RUN_LOG" ]; then rm -f -- "$RUN_LOG"; fi
   if [ -n "$RUN_SID" ]; then rm -f -- "$RUN_SID"; fi
+  if [ -n "$LEDGER_TMP" ]; then rm -f -- "$LEDGER_TMP"; fi
+  if [ -n "$SHADOW_TMP" ]; then rm -f -- "$SHADOW_TMP"; fi
 }
 trap cleanup EXIT
 
@@ -391,6 +430,7 @@ runner_totals() {
 
 RUN_EXIT=0
 RUN_EVIDENCE=""
+RUN_STARTED=1   # 0 when the command could not be started at all
 
 # run_command <command> <timeout> — runs the command and sets RUN_EXIT and
 # RUN_EVIDENCE. Output goes to a file, not a pipe, and the command runs in its
@@ -401,18 +441,29 @@ run_command() {
   local command_string="$1" limit="$2" code=0 dir
 
   dir="${TOP:-$PWD}"
-  RUN_LOG=$(mktemp "${TMPDIR:-/tmp}/epico-reuse.XXXXXX") || {
+  RUN_STARTED=1
+  # Where the command cannot be started, the verdict is FAIL but it is not a
+  # result: nothing is recorded for it, so it can never replace a real PASS.
+  if ! command -v setsid >/dev/null 2>&1 || ! command -v timeout >/dev/null 2>&1; then
+    RUN_STARTED=0
+    RUN_EXIT=126
+    RUN_EVIDENCE="setsid and timeout are needed to run a check"
+    return 0
+  fi
+  if ! RUN_LOG=$(mktemp "${TMPDIR:-/tmp}/epico-reuse.XXXXXX" 2>/dev/null); then
     RUN_LOG=""
-    RUN_EXIT=1
+    RUN_STARTED=0
+    RUN_EXIT=126
     RUN_EVIDENCE="no temporary file could be created"
     return 0
-  }
-  RUN_SID=$(mktemp "${TMPDIR:-/tmp}/epico-reuse.XXXXXX") || {
+  fi
+  if ! RUN_SID=$(mktemp "${TMPDIR:-/tmp}/epico-reuse.XXXXXX" 2>/dev/null); then
     RUN_SID=""
-    RUN_EXIT=1
+    RUN_STARTED=0
+    RUN_EXIT=126
     RUN_EVIDENCE="no temporary file could be created"
     return 0
-  }
+  fi
   # --fork makes setsid succeed even where this shell's job is a group leader;
   # the new session's leader writes its own pid, which names the group to kill.
   # shellcheck disable=SC2016  # $$ and $0 belong to the inner bash
@@ -429,8 +480,301 @@ run_command() {
   RUN_SID=""
 }
 
+LEDGER_DIR=""         # <git-common-dir>/epico/reuse; empty when git cannot name it
+LEDGER_FILE=""
+LEDGER_NOTE=""        # why there is no ledger directory
+LEDGER_JSON=""        # the ledger in force: a valid version-1 ledger, possibly empty
+LEDGER_BLOCKED=0      # 1 when an unreadable ledger could not be set aside
+EMPTY_LEDGER='{"version":1,"entries":{}}'
+LEDGER_CAP=2000
+SHADOW_CAP=5000
+
+# resolve_ledger_dir — the ledger lives in the git COMMON dir, so every worktree
+# of one repository shares it. Plain --git-common-dir is relative in the main
+# worktree (`.git`), hence the absolute form (git 2.31 or newer).
+resolve_ledger_dir() {
+  local common
+
+  LEDGER_DIR=""
+  LEDGER_FILE=""
+  LEDGER_NOTE=""
+  if ! common=$(git -C "${TOP:-$PWD}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || [ -z "$common" ]; then
+    LEDGER_NOTE="git cannot name its common directory (git 2.31 or newer is needed)"
+    return 0
+  fi
+  LEDGER_DIR="$common/epico/reuse"
+  LEDGER_FILE="$LEDGER_DIR/ledger.json"
+}
+
+# ledger_read <set-aside> — sets LEDGER_JSON to the ledger, or to an empty one
+# when there is none or it is unreadable (invalid JSON, a wrong shape, a version
+# other than 1). With <set-aside> = 1 an unreadable ledger is renamed to
+# ledger.json.unreadable-<UTC stamp>, a name that never replaces an earlier
+# copy; when that fails the ledger is left untouched and LEDGER_BLOCKED is 1, so
+# nothing is written over it.
+ledger_read() {
+  local mutate="$1" raw stamp aside n
+
+  LEDGER_JSON="$EMPTY_LEDGER"
+  LEDGER_BLOCKED=0
+  if [ ! -e "$LEDGER_FILE" ] && [ ! -L "$LEDGER_FILE" ]; then return 0; fi
+  if raw=$(cat -- "$LEDGER_FILE" 2>/dev/null) && jq -e -s '
+        length == 1 and (.[0] |
+          type == "object" and .version == 1 and (.entries | type == "object")
+          and (.entries | all(.[]; type == "object"
+            and (.result | type == "string") and (.at | type == "string"))))
+      ' <<<"$raw" >/dev/null 2>&1; then
+    LEDGER_JSON=$(jq -c '.' <<<"$raw")
+    return 0
+  fi
+  [ "$mutate" = 1 ] || return 0
+
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  aside="$LEDGER_FILE.unreadable-$stamp"
+  n=0
+  while [ -e "$aside" ] || [ -L "$aside" ]; do
+    n=$((n + 1))
+    aside="$LEDGER_FILE.unreadable-$stamp-$n"
+  done
+  if mv -- "$LEDGER_FILE" "$aside" 2>/dev/null; then
+    warn "the reuse ledger was unreadable; it was set aside as ${aside##*/}"
+  else
+    LEDGER_BLOCKED=1
+    warn "the reuse ledger is unreadable and could not be set aside; checks run as if nothing were recorded"
+  fi
+}
+
+
+# ledger_lock — serialises the read-modify-write of the ledger between runs that
+# share it (parallel Executors in worktrees do). Without it, a slow run could
+# write back the ledger it read before a newer FAIL was recorded, and a stale PASS
+# would be reused in mode `on`. `mkdir` is atomic and needs no flock (absent on
+# macOS). Waits about 5 s; a lock older than a minute belonged to a run that was
+# killed, and is broken. Returns 1 when the lock cannot be taken.
+ledger_lock() {
+  local lock="$LEDGER_DIR/ledger.lock" tries=0 absent=0
+
+  while ! mkdir -- "$lock" 2>/dev/null; do
+    if [ -d "$lock" ]; then
+      absent=0
+      tries=$((tries + 1))
+      if [ "$tries" -ge 50 ]; then
+        [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] || return 1
+        if mv -- "$lock" "$lock.stale.$$" 2>/dev/null; then rm -rf -- "$lock.stale.$$"; fi
+        tries=0
+        continue
+      fi
+    else
+      # The holder may have released it between our mkdir and this test, so a
+      # missing lock is retried; only a few misses in a row mean the directory
+      # itself cannot be written to.
+      absent=$((absent + 1))
+      [ "$absent" -lt 5 ] || return 1
+    fi
+    sleep 0.1
+  done
+  LOCK_DIR="$lock"
+}
+
+ledger_unlock() {
+  if [ -n "$LOCK_DIR" ]; then rmdir -- "$LOCK_DIR" 2>/dev/null || true; fi
+  LOCK_DIR=""
+}
+
+# ledger_record <result> <secs> <command> — records the run under KEY. The file is
+# written beside the ledger and renamed into place, so it is never torn. Every
+# failure warns and returns 0: the check's verdict and exit code are decided.
+ledger_record() {
+  if ! mkdir -p -- "$LEDGER_DIR" 2>/dev/null; then
+    warn "the result was not recorded: $LEDGER_DIR cannot be created"
+    return 0
+  fi
+  if ! ledger_lock; then
+    warn "the result was not recorded: $LEDGER_DIR cannot be written to, or is locked"
+    return 0
+  fi
+  ledger_write "$@"
+  ledger_unlock
+}
+
+# ledger_write <result> <secs> <command> — with the lock held.
+ledger_write() {
+  local result="$1" secs="$2" command_string="$3"
+
+  ledger_read 1
+  if [ "$LEDGER_BLOCKED" -eq 1 ]; then
+    warn "the result was not recorded"
+    return 0
+  fi
+  if ! LEDGER_TMP=$(mktemp "$LEDGER_DIR/ledger.XXXXXX" 2>/dev/null); then
+    LEDGER_TMP=""
+    warn "the result was not recorded: $LEDGER_DIR cannot be written to"
+    return 0
+  fi
+  # The ledger goes in on stdin: a ledger of 2000 entries is past the limit on a
+  # single argument. The entry is built in the same call, from --arg values, for
+  # the same reason: a long command escaped twice would not fit either.
+  # Past the cap the OLDEST of the other entries go; the entry just written never
+  # does, whatever its timestamp says.
+  if ! printf '%s' "$LEDGER_JSON" | jq -c \
+    --arg key "$KEY" \
+    --arg command "$command_string" \
+    --arg result "$result" \
+    --arg fingerprint "$FP" \
+    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --argjson secs "$secs" \
+    --argjson cap "$LEDGER_CAP" '
+      {command: $command, result: $result, fingerprint: $fingerprint, at: $at, secs: $secs} as $entry
+      | (.entries | del(.[$key]) | to_entries | sort_by(.value.at)) as $others
+      | .entries = (
+          (if ($others | length) > ($cap - 1)
+           then $others[(($others | length) - ($cap - 1)):]
+           else $others end
+           | from_entries) + {($key): $entry})' >"$LEDGER_TMP" 2>/dev/null; then
+    rm -f -- "$LEDGER_TMP"
+    LEDGER_TMP=""
+    warn "the result was not recorded: the ledger could not be rewritten"
+    return 0
+  fi
+  if ! mv -f -- "$LEDGER_TMP" "$LEDGER_FILE" 2>/dev/null; then
+    rm -f -- "$LEDGER_TMP"
+    LEDGER_TMP=""
+    warn "the result was not recorded: $LEDGER_FILE cannot be replaced"
+    return 0
+  fi
+  LEDGER_TMP=""
+}
+
+# shadow_append <result> <secs> <would_reuse> <command> — one line per shadow
+# run, then the log is trimmed to its newest SHADOW_CAP lines through a temp file
+# and a rename. A failure warns and changes nothing else.
+shadow_append() {
+  local result="$1" secs="$2" would="$3" command_string="$4" line lines log
+  log="$LEDGER_DIR/shadow.log"
+
+  line=$(jq -nc \
+    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg command "$command_string" \
+    --arg key "$KEY" \
+    --argjson would "$would" \
+    --arg result "$result" \
+    --argjson secs "$secs" \
+    '{at: $at, command: $command, key: $key, would_reuse: $would, result: $result, secs: $secs}')
+  # A log whose last line lost its newline (a crash mid-append) would swallow the
+  # next record: start on a new line in the same write.
+  if [ -s "$log" ] && [ -n "$(tail -c 1 "$log" 2>/dev/null)" ]; then line=$'\n'"$line"; fi
+  if ! mkdir -p -- "$LEDGER_DIR" 2>/dev/null || ! { printf '%s\n' "$line" >>"$log"; } 2>/dev/null; then
+    warn "the shadow line was not recorded"
+    return 0
+  fi
+  lines=$(wc -l <"$log" 2>/dev/null | tr -d ' ') || lines=0
+  case "$lines" in '' | *[!0-9]*) return 0 ;; esac
+  [ "$lines" -gt "$SHADOW_CAP" ] || return 0
+  if ! SHADOW_TMP=$(mktemp "$LEDGER_DIR/shadow.XXXXXX" 2>/dev/null); then
+    SHADOW_TMP=""
+    warn "the shadow log was not trimmed"
+    return 0
+  fi
+  if ! { tail -n "$SHADOW_CAP" "$log" >"$SHADOW_TMP" && mv -f -- "$SHADOW_TMP" "$log"; } 2>/dev/null; then
+    rm -f -- "$SHADOW_TMP"
+    warn "the shadow log was not trimmed"
+  fi
+  SHADOW_TMP=""
+}
+
+# find_never <command> — prints the first profile `never` entry the command holds
+# as a literal substring (a pattern is never read), or nothing.
+find_never() {
+  local entry
+
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    case "$1" in *"$entry"*)
+      printf '%s' "$entry"
+      return 0
+      ;;
+    esac
+  done < <(jq -r '.never[]' <<<"$PROFILE_JSON")
+  return 0
+}
+
+MODE=shadow
+NEVER_ENTRY=""
+RECORDABLE=0   # 1 when this run's result may be read from, and written to, the ledger
+HIT=0          # 1 when the ledger holds a PASS for KEY
+LAST="null"    # the ledger entry for KEY
+REASON=""
+
+# prepare <command> — what `run` and `lookup` both need: the fingerprint, the
+# profile, the mode, the key and the ledger's verdict. The fingerprint is
+# reported in every mode, `never` commands included. The key (and its probes) is
+# built only where a result could be read or written. It only reads: an
+# unreadable ledger is set aside by `ledger_record`, under the lock.
+prepare() {
+  local command_string="$1" mode_reason=""
+
+  RECORDABLE=0
+  HIT=0
+  LAST="null"
+  NEVER_ENTRY=""
+  fingerprint
+  load_profile
+  MODE=$(jq -r '.mode' <<<"$PROFILE_JSON")
+  KEY=""
+  KEY_REASON=""
+  if [ "$MODE" = off ]; then
+    mode_reason="reuse is off"
+  else
+    NEVER_ENTRY=$(find_never "$command_string")
+    if [ -n "$NEVER_ENTRY" ]; then
+      mode_reason="the command holds a never-reuse entry: $NEVER_ENTRY"
+    else
+      build_key "$command_string"
+    fi
+  fi
+  if [ -n "$KEY" ]; then
+    resolve_ledger_dir
+    if [ -n "$LEDGER_DIR" ]; then
+      RECORDABLE=1
+      ledger_read 0
+      LAST=$(jq -c --arg k "$KEY" '.entries[$k] // null' <<<"$LEDGER_JSON")
+      if jq -e '. != null and .result == "PASS"' <<<"$LAST" >/dev/null 2>&1; then HIT=1; fi
+    else
+      mode_reason="$LEDGER_NOTE"
+    fi
+  fi
+  REASON=$(join_reasons "$FP_REASON" "$PROFILE_REASON" "$mode_reason" "$KEY_REASON")
+}
+
+# emit_run <decision> <would_reuse> <result> <exit> <evidence> <secs>
+emit_run() {
+  jq -nc \
+    --arg mode "$MODE" \
+    --arg decision "$1" \
+    --argjson would "$2" \
+    --arg result "$3" \
+    --argjson exit "$4" \
+    --arg evidence "$5" \
+    --argjson secs "$6" \
+    --arg fingerprint "$FP" \
+    --arg key "$KEY" \
+    --arg reason "$REASON" \
+    '{
+      mode: $mode,
+      decision: $decision,
+      would_reuse: $would,
+      result: $result,
+      exit: $exit,
+      evidence: $evidence,
+      secs: $secs,
+      fingerprint: (if $fingerprint == "" then null else $fingerprint end),
+      key: (if $key == "" then null else $key end),
+      reason: $reason
+    }'
+}
+
 cmd_run() {
-  local fresh=0 limit=300 command_string reason mode result start secs
+  local fresh=0 limit=300 command_string result start secs would=false at
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -455,11 +799,16 @@ cmd_run() {
   command_string="$*"
   [ -n "${command_string//[[:space:]]/}" ] || usage_error "run needs a command after --"
 
-  fingerprint
-  load_profile
-  build_key "$command_string"
-  mode=$(jq -r '.mode' <<<"$PROFILE_JSON")
-  reason=$(join_reasons "$FP_REASON" "$PROFILE_REASON" "$KEY_REASON")
+  prepare "$command_string"
+  if [ "$HIT" -eq 1 ]; then would=true; fi
+
+  # Only a PASS is ever a hit, and only in mode `on`: shadow measures, off and a
+  # never-reuse command never look, and --fresh asks for a real run.
+  if [ "$MODE" = on ] && [ "$HIT" -eq 1 ] && [ "$fresh" -eq 0 ]; then
+    at=$(jq -r '.at' <<<"$LAST")
+    emit_run reused true PASS 0 "reused: PASS recorded $at" 0
+    return 0
+  fi
 
   start=$SECONDS
   run_command "$command_string" "$limit"
@@ -468,34 +817,17 @@ cmd_run() {
   result=FAIL
   if [ "$RUN_EXIT" -eq 0 ]; then result=PASS; fi
 
-  # shellcheck disable=SC2034  # $fresh is acted on by the ledger, in 3.2
-  : "$fresh"
-  jq -nc \
-    --arg mode "$mode" \
-    --arg result "$result" \
-    --argjson exit "$RUN_EXIT" \
-    --arg evidence "$RUN_EVIDENCE" \
-    --argjson secs "$secs" \
-    --arg fingerprint "$FP" \
-    --arg key "$KEY" \
-    --arg reason "$reason" \
-    '{
-      mode: $mode,
-      decision: "ran",
-      would_reuse: false,
-      result: $result,
-      exit: $exit,
-      evidence: $evidence,
-      secs: $secs,
-      fingerprint: (if $fingerprint == "" then null else $fingerprint end),
-      key: (if $key == "" then null else $key end),
-      reason: $reason
-    }'
+  if [ "$RECORDABLE" -eq 1 ] && [ "$RUN_STARTED" -eq 1 ]; then
+    ledger_record "$result" "$secs" "$command_string"
+    if [ "$MODE" = shadow ]; then shadow_append "$result" "$secs" "$would" "$command_string"; fi
+  fi
+
+  emit_run ran "$would" "$result" "$RUN_EXIT" "$RUN_EVIDENCE" "$secs"
   [ "$result" = PASS ]
 }
 
 cmd_lookup() {
-  local command_string reason mode
+  local command_string would=false
 
   [ "${1:-}" = "--" ] || usage_error "lookup needs -- before the command"
   shift
@@ -503,25 +835,52 @@ cmd_lookup() {
   command_string="$*"
   [ -n "${command_string//[[:space:]]/}" ] || usage_error "lookup needs a command after --"
 
-  fingerprint
-  load_profile
-  build_key "$command_string"
-  mode=$(jq -r '.mode' <<<"$PROFILE_JSON")
-  reason=$(join_reasons "$FP_REASON" "$PROFILE_REASON" "$KEY_REASON")
+  prepare "$command_string"
+  if [ "$HIT" -eq 1 ]; then would=true; fi
 
   jq -nc \
-    --arg mode "$mode" \
+    --arg mode "$MODE" \
+    --argjson would "$would" \
     --arg fingerprint "$FP" \
     --arg key "$KEY" \
-    --arg reason "$reason" \
+    --argjson last "$LAST" \
+    --arg reason "$REASON" \
     '{
       mode: $mode,
-      would_reuse: false,
+      would_reuse: $would,
       fingerprint: (if $fingerprint == "" then null else $fingerprint end),
       key: (if $key == "" then null else $key end),
-      last: null,
+      last: $last,
       reason: (if $reason == "" then null else $reason end)
     }'
+}
+
+cmd_stats() {
+  local log
+
+  [ "$#" -eq 0 ] || usage_error "stats takes no arguments"
+  TOP=$(git rev-parse --show-toplevel 2>/dev/null) || TOP=""
+  resolve_ledger_dir
+  log="$LEDGER_DIR/shadow.log"
+  if [ -z "$LEDGER_DIR" ]; then
+    warn "no shadow log: ${LEDGER_NOTE}"
+    log=/dev/null
+  elif [ ! -f "$log" ]; then
+    log=/dev/null
+  elif [ ! -r "$log" ]; then
+    warn "the shadow log cannot be read"
+    log=/dev/null
+  fi
+  jq -Rn '
+    [inputs | fromjson? | select(type == "object")] as $lines
+    | ($lines | map(select(.would_reuse == true))) as $would
+    | {
+        runs: ($lines | length),
+        would_reuse: ($would | length),
+        agreed: ($would | map(select(.result == "PASS")) | length),
+        disagreed: ($would | map(select(.result == "FAIL") | {command, at})),
+        secs_reusable: ($would | map(.secs | numbers) | add // 0)
+      }' <"$log"
 }
 
 [ "$#" -gt 0 ] || usage_error "a subcommand is required"
@@ -531,6 +890,7 @@ shift
 case "$sub" in
   lookup) cmd_lookup "$@" ;;
   run) cmd_run "$@" ;;
-  stats | profile) usage_error "'$sub' is not available yet" ;;
+  stats) cmd_stats "$@" ;;
+  profile) usage_error "'$sub' is not available yet" ;;
   *) usage_error "unknown subcommand: $sub" ;;
 esac
