@@ -62,7 +62,7 @@ Run `/reload-plugins` after updating plugin files.
 ### Prerequisites
 
 - **Claude Code v2.1.295 or newer.** One floor for every feature: the fail-closed guards (`onFailure`), the sub-agent status line, `LSP` in a background sub-agent and the plugin options all need it. Older versions are not supported.
-- `bash`, `git`, `jq` available on PATH
+- `bash`, `jq` and git 2.31 or newer available on PATH (2.31 names the common git directory by absolute path, where the [reuse ledger](#check-reuse) lives); `setsid` and `timeout` to run a check
 - **Optional MCPs** for web research: `brave-search`, `exa`, `tavily`, `firecrawl`, and `perplexity` (premium, never the default). Epico health-checks each MCP before suggesting it; missing MCPs degrade gracefully. Library docs need no MCP: Epico reads the installed dependency first, then the official docs for that version.
 - **Optional — keep sub-agents in the foreground:** in interactive sessions Claude Code runs sub-agents in the background by default, and Epico then waits for each one's completion notification. To run them in the foreground instead, start Claude Code with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` (or put it in your settings `env`). Side effect: no background Bash commands and no Ctrl+B.
 - **Optional tooling for development**: `shellcheck` and `bats` for running the script test suite locally (`bats tests/`).
@@ -128,6 +128,19 @@ Artifacts live in `.epico/stories/NNN-kebab-case/`. Whether git tracks them is a
 | `tech-reviewer` | Correctness at technology boundaries (templates, SQL, APIs). Holds `Bash` for **measurement only** — never a mutation of files or git state — so a finding that rests on a runnable check carries the command and its output instead of an argument |
 | `final-reviewer` | Fresh review of finished lean-route work for a beginner: reports each gap with the command that reproduces it, never edits |
 | `auditor` | Compares built code against story + design; detects scope creep. Writes `.draft/audit-report.yaml` on the same before-the-summary contract; its `Write` reaches that one path and nothing else |
+
+### Check reuse
+
+A story runs the same validation command several times: the Executor's Validation, its Refactor re-run, the end-of-run gates, `epico-validate-run`, the Auditor's reproductions. `epico-check` runs a check and, once a project switches reuse on, returns the PASS of an identical earlier run — same command, same code, same environment — without running it again. Only a PASS is ever reused; a FAIL always runs.
+
+| Command | Purpose |
+|---|---|
+| `epico-check run [--fresh] [--timeout <s>] -- <cmd>` | Run a check, or return its reused PASS; prints one JSON line |
+| `epico-check lookup -- <cmd>` | Say what `run` would decide, running nothing |
+| `epico-check stats` | Summarise the shadow log: runs, how many would have been reused, the time that saves, and every disagreement |
+| `epico-check profile --detect` | Print a proposed profile from the manifests and ignored local files present; writes nothing |
+
+Reuse is configured per project in `.epico/reuse-profile.json`, which `init` writes: `mode` is `off`, `shadow` or `on`, with `tools` (version probes whose output joins the key), `inputs` (gitignored files a check reads) and `never` (command substrings that always run). Every project starts in `shadow`, the default: every check runs and the log records whether a PASS would have been reused. Switch to `on` by hand once `epico-check stats` shows no disagreement traced to the key. The ledger lives in the git common directory, is shared by every worktree of the repository and is never committed. See [references/check-reuse.md](references/check-reuse.md).
 
 ### Automatic validation
 

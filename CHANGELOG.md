@@ -10,6 +10,25 @@ on there is one floor for the whole plugin (see README "Prerequisites").
 
 ## [Unreleased]
 
+Checks that already passed on the same code are no longer run again, once a project asks for it.
+
+**Minimum Claude Code:** 2.1.295, unchanged. **Minimum git:** 2.31 (new; it names the common git directory by absolute path).
+
+### Added
+
+- **`epico-check`: exact reuse of a passing check.** `epico-check run -- <cmd>` returns the PASS of an earlier run whose command, code and environment are identical, without running the command; a FAIL always runs. The key covers every tracked file and every untracked file git does not ignore (`.epico/` and `.epic/` excluded), the output of the profile's tool-version probes, the content of the profile's listed inputs and the profile itself. The ledger is shared by every worktree of a repository, written through a temp file and a rename under a lock, and only `epico-check run` writes it — a PreToolUse guard denies an agent's direct write. Also `lookup`, `stats` and `profile --detect`.
+- **Shadow mode is the default.** Every project measures first: all checks run, and `epico-check stats` reports what reuse would have skipped and every disagreement. Switching to `on` is a person's decision.
+- **`.epico/reuse-profile.json`**, written by `init` and `init --repair`: `mode`, `tools`, `inputs` and `never`. `epico-doctor` warns when it is missing.
+- **`references/check-reuse.md`**, the single home of which runs are routed through reuse and which never are (the ones that must observe a failure, or run outside the working tree).
+
+### Fixed
+
+- **`epico-validate-run --only` could pass a story on a fraction of its checks.** With no previous full run it now refuses (exit 2); and an unselected PASS is kept only on the code it passed on — on changed code, or with no fingerprint to compare, it runs again. Each entry of the report also carries `reused` and `fingerprint`.
+
+### Changed
+
+- **Gate guidance:** one gate line per target, sharing the item's `Qn`, so an unchanged suite is reused while a changed one runs; a gate never switches a tool's own result cache off, and no gate runs a command another gate already runs.
+
 ## [0.27.1] — 2026-11-03
 
 The converge pass and the final review run silently.
