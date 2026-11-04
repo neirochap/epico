@@ -26,6 +26,8 @@ Perform a holistic review comparing what was planned vs what was built. Activate
 
 ## Part 2 — Checks
 
+Run a command that reproduces an Executor claim with `epico-check run -- <cmd>` ([check-reuse.md](${CLAUDE_PLUGIN_ROOT}/references/check-reuse.md)); check 11 below runs on the base commit and stays direct.
+
 1. **Requirements coverage:** Every requirement in story.md is implemented (trace to actual code, not just task checkboxes). A criterion carrying the `(satisfied-by: <artifact>)` suffix is traced to THAT ARTIFACT instead — confirm the artifact exists and answers the criterion, and do not report it as a coverage gap. A suffix naming an artifact that does not exist IS a finding.
 2. **Component existence:** Every component in design.md exists in the codebase with the specified interfaces
 3. **Error handling:** Strategy in design.md is followed in actual handlers/controllers

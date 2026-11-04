@@ -91,13 +91,13 @@ Mark a deviation — or a finding under Warnings — `follow_up: true` when it l
 
 ### Step 4: VALIDATION
 
-Run the Validation command. On failure, report the **FULL output** and **STOP** with `outcome: failed`. On success, report the command, its exit code and the last 20 lines of output — never just "it passed".
+Run the Validation command with `epico-check run -- <cmd>` ([check-reuse.md](${CLAUDE_PLUGIN_ROOT}/references/check-reuse.md)) — a PASS reused for an unchanged tree is reported as `reused`, not as a fresh run. On failure, report the **FULL output** and **STOP** with `outcome: failed`. On success, report the command, its exit code and the last 20 lines of output — never just "it passed".
 
 ### Step 5: REFACTOR or TESTS (conditional)
 
 This step depends on whether the sub-task carries a pre-authored test. It is **step 5 of the six-step protocol** either way — only the wording changes.
 
-**Test-first sub-task → REFACTOR.** With the pre-authored test now passing (step 2) and Validation green (step 4), improve the implementation: remove duplication, clarify names, simplify structure. Use the passing test plus the Validation command as a **regression safety net** — re-run both after refactoring and confirm they **stay green**. The frozen-test rule still applies: do not modify the test's assertions. If a refactor cannot keep the test and validation green, revert it. If refactoring surfaces a behavior-changing design deviation, **STOP and escalate** with `outcome: failed` — never edit an assertion.
+**Test-first sub-task → REFACTOR.** With the pre-authored test now passing (step 2) and Validation green (step 4), improve the implementation: remove duplication, clarify names, simplify structure. Use the passing test plus the Validation command as a **regression safety net** — re-run both after refactoring (the Validation command through `epico-check run -- <cmd>`) and confirm they **stay green**. The frozen-test rule still applies: do not modify the test's assertions. If a refactor cannot keep the test and validation green, revert it. If refactoring surfaces a behavior-changing design deviation, **STOP and escalate** with `outcome: failed` — never edit an assertion.
 
 **Test-after sub-task → TESTS (if a Tests field exists).** Create or update the test file. Implement the test scenarios listed. Run the tests. On failure, report the full output and **STOP**; on success, the command, its exit code and the last 20 lines.
 
