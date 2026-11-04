@@ -48,6 +48,11 @@
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-executor-guard.sh\"",
             "onFailure": "block"
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-reuse-guard.sh\"",
+            "onFailure": "block"
           }
         ]
       },
@@ -74,6 +79,16 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-commit-identity-guard.sh\"",
+            "onFailure": "block"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-reuse-guard.sh\"",
             "onFailure": "block"
           }
         ]
