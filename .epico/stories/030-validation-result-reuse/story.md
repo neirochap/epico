@@ -3,9 +3,13 @@ story: 030-validation-result-reuse
 type: feature
 scale: full
 engineering: project
-version: 1
+version: 2
 created: 2026-11-04
-status: draft
+last-refined: 2026-11-04
+history:
+  - v1: Initial story
+  - v2: Refine after the run - R2.15, R2.16 and R4.8 added; the design describes the fingerprint, key, ledger lock and run as built; Task 10 adds regression guards for the review findings
+status: in-progress
 ---
 
 # Story - Validation Result Reuse
@@ -48,6 +52,8 @@ A story's checks run again and again on code that has not changed. A validation 
 - R2.12: WHEN a reused or run check is reported THE SYSTEM SHALL return the same verdict and exit code a direct run would return: 0 for PASS, 1 for FAIL, and FAIL with `timed out after <s>s` when the command exceeds its timeout
 - R2.13: IF a tool-version probe runs longer than 10 seconds THEN THE SYSTEM SHALL stop it, run the check, and report that no reuse was possible, naming the probe
 - R2.14: WHEN a check is reported in any mode, a never-reuse command included THE SYSTEM SHALL report the code fingerprint whenever it can be computed
+- R2.15: IF the command cannot be started THEN THE SYSTEM SHALL report FAIL with exit code 126 and record nothing
+- R2.16: WHEN the check runner is terminated THE SYSTEM SHALL stop the command it started
 
 ### R3. Shadow measurement
 
@@ -73,6 +79,7 @@ A story's checks run again and again on code that has not changed. A validation 
 - R4.4: IF the reuse profile is not valid JSON or carries an unknown format version THEN THE SYSTEM SHALL apply the shadow defaults, warn, and leave the profile file unmodified
 - R4.5: IF recording a result fails THEN THE SYSTEM SHALL still return the check's own verdict and exit code and warn that the result was not recorded
 - R4.6: IF the reuse guard fails while deciding THEN THE SYSTEM SHALL let the tool call through
+- R4.8: WHEN two checks record a result at once THE SYSTEM SHALL keep both, and never let an older result replace a newer one for the same key
 
 ### R5. Per-project profile
 

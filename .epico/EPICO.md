@@ -34,5 +34,6 @@
 | 027 | [speed-changes-words-not-steps](archive/027-speed-changes-words-not-steps/) | archived | 9/9 | archived |
 | 028 | [native-security-infra-rules](archive/028-native-security-infra-rules/story.md) | archived | 30/30 | archived |
 | 029 | [checkpoint-dependency-signal-and-edge-case-questions](archive/029-checkpoint-dependency-signal-and-edge-case-questions/story.md) | archived | 31/31 | archived |
+| 030 | [validation-result-reuse](stories/030-validation-result-reuse/story.md) | in-progress | 43/50 | active |
 
 <!-- epico:index:end -->

@@ -6,9 +6,13 @@ scale_reason: a new contract (ledger, profile and epico-check JSON) read by scri
 engineering: project
 requester: developer
 run-model: sonnet
-version: 1
+version: 2
 created: 2026-11-04
-status: draft
+last-refined: 2026-11-04
+history:
+  - v1: Initial story
+  - v2: Refine after the run - R2.15, R2.16 and R4.8 added; the design describes the fingerprint, key, ledger lock and run as built; Task 10 adds regression guards for the review findings
+status: in-progress
 ---
 
 # Implementation Plan - Validation Result Reuse
@@ -22,16 +26,17 @@ The plan builds outwards:
 4. Per-project profile detection, wired into init and doctor.
 5. The reference that routes the agents' check runs, and the gate guidance.
 6. The contract checks, the README and the whole local check from a clean clone.
+7. Regression guards (added by the refinement after the run): the defects the technical review found were fixed and verified by hand; Task 10 gives each a permanent test.
 
 Every Unit and Integration test is pre-authored under `.draft/authored-tests/` and confirmed Red. Nothing shipped names a real project.
 
 ## Task List
 
-- [ ] 1 - Refuse --only revalidation with no previous run
+- [x] 1 - Refuse --only revalidation with no previous run
   - _Complexity: Simple | Tests: Integration | Risks: six existing cases rely on the old behaviour | Dependencies: None_
   - Objective: a revalidation of named entries can no longer pass on a fraction of the story's checks
 
-  - [ ] 1.1 - Refuse --only when no validation-run.json exists
+  - [x] 1.1 - Refuse --only when no validation-run.json exists
     - Context:
       - Files: `scripts/validate-run.sh` (`--only` merge at the `PREV='[]'` line), `tests/fast-verification.bats` (setup and the `--only` cases)
     - Objective: `--only` with no previous run exits 2 without writing a report
@@ -47,11 +52,11 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Quality: Q1, Q2, Q3
     - Commit: "fix(030): refuse --only revalidation with no previous run"
 
-- [ ] 2 - Code fingerprint and reuse key
+- [x] 2 - Code fingerprint and reuse key
   - _Complexity: High | Tests: Unit | Risks: every `.epico` state, worktrees, submodules | Dependencies: None_
   - Objective: one deterministic key per check that changes exactly when the command, the code or the environment changes
 
-  - [ ] 2.1 - check-reuse.sh skeleton, bin/epico-check and the fingerprint
+  - [x] 2.1 - check-reuse.sh skeleton, bin/epico-check and the fingerprint
     - Context:
       - Files: `bin/epico-validate-run` (wrapper pattern), `scripts/close-subtask.sh` (usage errors print no JSON, header lines 9-37), `tests/bin-wrappers.bats` (the hand-kept list near line 19), the design's "Reuse key" and "Implementation Gotchas"
     - Objective: `epico-check lookup -- <cmd>` reports the code fingerprint, or null with the reason none could be computed
@@ -74,12 +79,12 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
         - any git step fails (an unreadable file makes `add` fail) — call each step and handle its error;
         - `git status --porcelain --ignore-submodules=none` shows a submodule with modified content.
       - **`lookup -- <cmd>`** emits `mode`, `would_reuse`, `fingerprint`, `key`, `last` and `reason`. `key` stays null until 2.2.
-    - Tests: Unit · `tests/check-reuse-fingerprint.bats` — tracked edit, new untracked file and `.epico-notes.md`/`.epic.md` change it; `.epico` versioned, gitignored, gitignored-with-a-tracked-file keep it; an ignored non-input file keeps it; clean checkout equals `HEAD^{tree}`; real index untouched; lookup JSON keys; null + reason for a non-git dir, an unreadable file, a dirty submodule (a clean submodule still fingerprints); usage exit 2 with no JSON; wrapper
+    - Tests: Unit · `tests/check-reuse-fingerprint.bats` — tracked edit, new untracked file and `.epico-notes.md`/`.epic.md` change it; `.epico` versioned, gitignored, gitignored-with-a-tracked-file keep it; an ignored non-input file keeps it; clean checkout equals `HEAD^{tree}`; real index untouched; lookup JSON keys; null + reason for a non-git dir, an unreadable file, a dirty submodule (a clean submodule still fingerprints); usage exit 2 with no JSON; wrapper. The `key` assertion of the lookup contract case needs the key built in 2.2, so that one case passes once 2.2 is done
     - Validation: `bats tests/check-reuse-fingerprint.bats tests/bin-wrappers.bats`
     - Requirements: R2.3, R2.7, R2.11
     - Quality: Q1, Q2, Q3
 
-  - [ ] 2.2 - Profile loading and the reuse key
+  - [x] 2.2 - Profile loading and the reuse key
     - Context:
       - Files: the design's "reuse-profile.json" and "Reuse key"
     - Objective: the key changes when an input file, a probe's output or the profile changes, and the profile is never modified
@@ -95,18 +100,18 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
           - A path that exists but is a directory or unreadable means no key, with a reason naming it. Call `hash-object` and handle its error.
         - **`profile`:** the profile file's blob hash, or `absent`.
         - With no key, the command still runs (3.1).
-    - Tests: Unit · `tests/check-reuse-key.bats` — key changes for a gitignored listed input (fingerprint unchanged), swapped input contents, an input appearing, probe output, profile edit, a different command; a probe exiting non-zero keys on its output; a probe hanging past EPICO_REUSE_PROBE_TIMEOUT=1, a directory input and an unreadable input each give key null, a reason, and the command still runs; stable for an absent probe binary, an unlisted ignored file, no change; absent profile gives shadow and "profile absent", lookup keeps `last`; invalid JSON and v2-saying-on give shadow plus a warning, file untouched; an invalid profile still runs
+    - Tests: Unit · `tests/check-reuse-key.bats` — key changes for a gitignored listed input (fingerprint unchanged), swapped input contents, an input appearing, probe output, profile edit, a different command; a probe exiting non-zero keys on its output; a probe hanging past EPICO_REUSE_PROBE_TIMEOUT=1, a directory input and an unreadable input each give key null, a reason, and the command still runs; stable for an absent probe binary, an unlisted ignored file, no change; absent profile gives shadow and "profile absent", lookup keeps `last`; invalid JSON and v2-saying-on give shadow plus a warning, file untouched; an invalid profile still runs. The hang, directory, unreadable-input and invalid-profile cases call `check-reuse.sh run`, delivered in 3.1: they pass, and this box closes, once 3.1 is done
     - Validation: `bats tests/check-reuse-key.bats`
     - Requirements: R2.4, R2.5, R2.6, R2.11, R2.13, R4.4
     - Quality: Q1, Q2, Q3, Q11
 
   - Commit: "feat(030): fingerprint and reuse key for epico-check"
 
-- [ ] 3 - Run, ledger and shadow
+- [x] 3 - Run, ledger and shadow
   - _Complexity: High | Tests: Unit + Integration | Risks: moving validate-run's run semantics intact; concurrent writers | Dependencies: Task 2_
   - Objective: a check is run or reused by one script that alone records results
 
-  - [ ] 3.1 - The run subcommand
+  - [x] 3.1 - The run subcommand
     - Context:
       - Files: `scripts/validate-run.sh` (`run_cmd`, under the comment "Output goes to a file, not a pipe", and `runner_totals`)
     - Objective: `epico-check run [--timeout <s>] -- <cmd>` returns the verdict a direct run would
@@ -128,7 +133,7 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Requirements: R2.11, R2.12, R2.14
     - Quality: Q1, Q2, Q3
 
-  - [ ] 3.2 - The ledger and the decision table
+  - [x] 3.2 - The ledger and the decision table
     - Context:
       - Files: the design's "Decision table (`run`)", "Ledger and shadow log" and "Error Handling Strategy"
     - Objective: on `on`, a PASS for an identical key is returned without running; every other row of the table runs
@@ -151,7 +156,7 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Requirements: R2.1, R2.2, R2.8, R2.9, R2.10, R2.11, R3.3, R3.4, R4.3, R4.5, R4.7
     - Quality: Q1, Q2, Q3, Q8, Q11
 
-  - [ ] 3.3 - Shadow log and stats
+  - [x] 3.3 - Shadow log and stats
     - Context:
       - Files: the design's "Ledger and shadow log"
     - Objective: shadow mode runs everything and records what would have been reused; `stats` summarises it
@@ -170,11 +175,11 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
 
   - Commit: "feat(030): epico-check run, ledger and shadow stats"
 
-- [ ] 4 - validate-run settles entries through epico-check
+- [x] 4 - validate-run settles entries through epico-check
   - _Complexity: Moderate | Tests: Integration | Risks: report readers; the existing --only case | Dependencies: Task 1, Task 3_
   - Objective: Validate runs, reuses and keeps entries by the same key the agents use
 
-  - [ ] 4.1 - Run each entry through check-reuse.sh
+  - [x] 4.1 - Run each entry through check-reuse.sh
     - Context:
       - Files: `scripts/validate-run.sh` (`check()`, and the JSON/YAML writers at the end), `scripts/run-report.sh`, `scripts/report.sh`, `tests/checkbox-grammar.bats`
     - Objective: every entry carries `reused` and `fingerprint`, and every existing field and reader is unchanged
@@ -191,7 +196,7 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Requirements: R1.5
     - Quality: Q1, Q2, Q3
 
-  - [ ] 4.2 - Keep an unselected PASS only on the same code
+  - [x] 4.2 - Keep an unselected PASS only on the same code
     - Context:
       - Files: `scripts/validate-run.sh` (the `--only` merge), `tests/fast-verification.bats` (the `--only` case)
     - Objective: `--only` re-runs a previous PASS whose code changed, or that carries no fingerprint
@@ -209,11 +214,11 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
 
   - Commit: "feat(030): validate-run settles entries through epico-check"
 
-- [ ] 5 - Ledger write guard
+- [x] 5 - Ledger write guard
   - _Complexity: Moderate | Tests: Integration | Risks: path spellings; blocking a session | Dependencies: Task 3_
   - Objective: an agent cannot write a PASS into the ledger by hand
 
-  - [ ] 5.1 - hook-reuse-guard.sh
+  - [x] 5.1 - hook-reuse-guard.sh
     - Context:
       - Files: `scripts/hook-executor-guard.sh` and `scripts/hook-archive-guard.sh` (deny JSON shape), `hooks/hooks.json`, `tests/hook-contracts.bats` (`onFailure` rule)
     - Objective: Edit/Write and writing shell commands into the ledger directory are denied; everything else passes
@@ -229,11 +234,11 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Quality: Q1, Q2, Q3, Q12
     - Commit: "feat(030): guard the reuse ledger against agent writes"
 
-- [ ] 6 - Per-project reuse profile
+- [x] 6 - Per-project reuse profile
   - _Complexity: Moderate | Tests: Unit + Integration | Risks: false inputs from ignored files | Dependencies: Task 2_
   - Objective: every project gets a reuse key fitted to its own toolchain and local files
 
-  - [ ] 6.1 - profile --detect
+  - [x] 6.1 - profile --detect
     - Context:
       - Files: the design's "reuse-profile.json" (the detect bullets)
     - Objective: a proposed profile is printed from the manifests and ignored files actually present, and nothing is written
@@ -255,7 +260,7 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Requirements: R5.1, R5.2, R5.5
     - Quality: Q1, Q2, Q3
 
-  - [ ] 6.2 - init writes the profile, doctor warns without one
+  - [x] 6.2 - init writes the profile, doctor warns without one
     - Context:
       - Files: `references/init-mode.md` (init and Repair sections), `scripts/doctor.sh` (`--summary`), `tests/doctor.bats` (lines 26 and 130)
     - Objective: init produces the profile in shadow mode; the health summary names the command when it is missing
@@ -274,11 +279,11 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
 
   - Commit: "feat(030): detect and write the per-project reuse profile"
 
-- [ ] 7 - Route check runs through epico-check
+- [x] 7 - Route check runs through epico-check
   - _Complexity: Moderate | Tests: Unit | Risks: run-mode.md line budget | Dependencies: Task 3_
   - Objective: every repeatable check run goes through reuse, and no must-fail or clean-copy run does
 
-  - [ ] 7.1 - check-reuse.md and the pointers
+  - [x] 7.1 - check-reuse.md and the pointers
     - Context:
       - Files: `agents/executor.md` (step 4 "Run the Validation command" and the Refactor re-run), `agents/auditor.md` (Part 2 and the bugfix base-commit guard), `references/run-mode.md` (inline route, end-of-run gates, Deferred E2E), `references/lean-route.md` (the whole check), `references/validate-mode.md`, `agents/test-advisor.md`, `agents/final-reviewer.md`, `tests/file-size.bats`
     - Objective: `references/check-reuse.md` is the single home of the routing rules, and each routed step points to it
@@ -302,11 +307,11 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Quality: Q3
     - Commit: "feat(030): route repeatable check runs through epico-check"
 
-- [ ] 8 - Gate guidance
+- [x] 8 - Gate guidance
   - _Complexity: Simple | Tests: Unit + Integration | Risks: None | Dependencies: None_
   - Objective: gates are written one per target and never switch a tool's own cache off
 
-  - [ ] 8.1 - One gate per target and the cache rules
+  - [x] 8.1 - One gate per target and the cache rules
     - Context:
       - Files: `references/quality-catalog.md` (the sentence starting "The first backtick span of a gate is the whole command validate runs"), `references/tasks.md` ("Generated Quality Gates"), `tests/quality-catalog.bats` (line 75)
     - Objective: the guidance directs one gate line per target sharing the `Qn`, and names the cache flags never to use
@@ -329,11 +334,11 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Quality: Q3
     - Commit: "feat(030): one gate per target and native-cache guidance"
 
-- [ ] 9 - Contracts, README and the local check
+- [x] 9 - Contracts, README and the local check
   - _Complexity: Moderate | Tests: Integration | Risks: act needs a clean clone, never a worktree | Dependencies: Task 1, Task 2, Task 3, Task 4, Task 5, Task 6, Task 7, Task 8_
   - Objective: the producers and consumers agree, the new command and runtime are documented, and the whole local check passes
 
-  - [ ] 9.1 - Producer→consumer contracts
+  - [x] 9.1 - Producer→consumer contracts
     - Context:
       - Files: `scripts/check-reuse.sh`, `scripts/validate-run.sh`, `scripts/run-report.sh`, `scripts/report.sh`, `scripts/hook-reuse-guard.sh`
     - Objective: the keys `check-reuse.sh run` emits are the ones `validate-run.sh` reads; the reports carry every field their readers read; the guard and the runner resolve one ledger directory
@@ -345,7 +350,7 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Requirements: R1.5, R2.8, R4.1
     - Quality: Q1, Q3
 
-  - [ ] 9.2 - README, runtime floor and CHANGELOG
+  - [x] 9.2 - README, runtime floor and CHANGELOG
     - Context:
       - Files: `README.md` (command list and runtime line), `CHANGELOG.md`
     - Objective: the README names `epico-check` and the profile, and declares git 2.31 or newer
@@ -357,7 +362,7 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Validation: `grep -q 'epico-check' README.md && grep -q 'git 2.31' README.md`
     - Quality: Q6, Q7
 
-  - [ ] 9.3 - The whole local check from a clean clone
+  - [x] 9.3 - The whole local check from a clean clone
     - Context:
       - Files: `RELEASING.md` (the local recipe), `.epico/constitution.md` (Quality: the CI mirror line)
     - Objective: every gate of this story passes on this machine before any push
@@ -378,25 +383,78 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
 
   - Commit: "docs(030): document epico-check, the reuse profile and git 2.31"
 
+- [ ] 10 - Regression guards for the review findings
+  - _Complexity: Moderate | Tests: Integration | Risks: a guard that cannot fail proves nothing; the fixes shipped before their tests | Dependencies: Task 3, Task 6_
+  - Objective: every defect the technical review found has a permanent test, and each test is shown to fail when its fix is removed
+
+  - [ ] 10.1 - Concurrency, signals and a command that cannot start
+    - Context:
+      - Files: `scripts/check-reuse.sh` (`ledger_lock`, `ledger_record`, `ledger_write`, `run_command`, `cleanup`), `tests/lib/reuse-fixture.sh`, `.draft/reports/tech-review-3.x.md`
+    - Objective: an older PASS never replaces a newer FAIL, a terminated runner leaves no command behind, and a command that cannot start records nothing
+    - ToDo:
+      - **Test:** copy the authored test from `.draft/authored-tests/tests/check-reuse-concurrency.bats`.
+      - **On a failing guard,** fix the producing script, never the test.
+    - Tests: Integration · `tests/check-reuse-concurrency.bats` — a FAIL recorded while six PASS writers run on the same key is not overwritten by an older PASS; twelve parallel runs on distinct keys keep twelve entries and leave no lock behind; a lock older than a minute is broken and the result recorded; a lock that stays held keeps the verdict and exit code and warns; a command that cannot start (an unusable TMPDIR, no `setsid`) is FAIL with exit 126, records nothing and leaves a recorded PASS in place; a TERM to the runner stops the checked command and leaves no temp file
+    - Validation: `bats tests/check-reuse-concurrency.bats`
+    - Requirements: R2.15, R2.16, R4.8
+    - Quality: Q1, Q2, Q3, Q8
+
+  - [ ] 10.2 - Hostile probes, profiles and inputs
+    - Context:
+      - Files: `scripts/check-reuse.sh` (`load_profile`, `run_probe`, `build_key`), `tests/lib/reuse-fixture.sh`, `.draft/reports/tech-review-2.1-2.2.md`
+    - Objective: no probe, profile or input can leave the key unchanged when the environment changed, or break the runner
+    - ToDo:
+      - **Test:** copy the authored test from `.draft/authored-tests/tests/check-reuse-hostile-key.bats`.
+      - **On a failing guard,** fix the producing script, never the test.
+    - Tests: Integration · `tests/check-reuse-hostile-key.bats` — 200 KB of probe output still gives a key that changes with the output; a probe with an environment prefix (`VAR=1 tool --version`) changes the key when the tool's output changes; a relative probe gives the same key from the top level and from a subdirectory; no `timeout` binary gives no key and a reason naming it; a profile holding several JSON documents, or a tool holding a newline, is read as invalid, and a version-2 first document saying `on` is never read as `on`; a FIFO input gives no key and does not hang; `EPICO_REUSE_PROBE_TIMEOUT=0` means the default 10
+    - Validation: `bats tests/check-reuse-hostile-key.bats`
+    - Requirements: R2.5, R2.11, R2.13, R4.4
+    - Quality: Q1, Q2, Q3, Q11
+
+  - [ ] 10.3 - Ledger, shadow log, stats and fingerprint edges
+    - Context:
+      - Files: `scripts/check-reuse.sh` (`ledger_write`, `shadow_append`, `cmd_stats`, `cmd_lookup`, `fingerprint`, `cmd_profile`), `tests/lib/reuse-fixture.sh`, `.draft/reports/tech-review-3.x.md`
+    - Objective: the bounded files, the summary and the fingerprint keep their promises at their edges
+    - ToDo:
+      - **Test:** copy the authored test from `.draft/authored-tests/tests/check-reuse-edges.bats`.
+      - **On a failing guard,** fix the producing script, never the test.
+    - Tests: Integration · `tests/check-reuse-edges.bats` — a full ledger keeps the entry just written even when every other entry has a later `at`; a 100 KB command is recorded; a shadow.log without a final newline loses no record; `stats` skips garbage lines and a non-numeric `secs`, and gives zeros with a warning for an unreadable log; `lookup` never sets an unreadable ledger aside; a dirty nested repository gives no fingerprint and a clean one does; a TMPDIR inside the work tree leaves the fingerprint stable; a `packageManager` value that is not a plain tool name never becomes a probe
+    - Validation: `bats tests/check-reuse-edges.bats`
+    - Requirements: R2.11, R3.2, R3.4, R4.3, R5.1
+    - Quality: Q1, Q2, Q3, Q8
+
+  - [ ] 10.4 - The whole local check again
+    - Context:
+      - Files: `RELEASING.md` (the local recipe)
+    - Objective: the new tests join a suite that passes as a whole
+    - ToDo:
+      - **Run** `shellcheck scripts/*.sh bin/*` and `bats tests/` as a normal user, from a clean clone.
+      - **Record each result.** Fix a red in the owning sub-task's files, never by weakening a check.
+    - Tests: None — verification only; it runs the whole suite
+    - Validation: `shellcheck scripts/*.sh bin/* && bats tests/`
+    - Quality: Q1, Q3
+
+  - Commit: "test(030): regression guards for the review findings"
+
 ## Quality Gates
 
 - [ ] All acceptance criteria validated
-- [ ] All task validations pass
-- [ ] All tests written and passing
-- [ ] Code integrated (no orphaned implementations)
-- [ ] Error handling implemented
-- [ ] Q1 — Lint: `shellcheck scripts/*.sh bin/*` exits 0
-- [ ] Q2 — Error handling: every new or changed script runs under `set -euo pipefail` and refuses with its reason in its JSON, or, for a usage error (exit 2), on stderr with no JSON; the story's bats cases prove each refusal path
-- [ ] Q3 — Unit tests: `bats tests/` passes, as a normal user
-- [ ] Q4 — Dependency vulnerabilities (SCA): `trivy fs .` reports no HIGH or CRITICAL
-- [ ] Q5 — Secrets: `gitleaks git .` reports no leaks
-- [ ] Q6 — README: `grep -q 'epico-check' README.md` exits 0
-- [ ] Q7 — Supported and declared runtime: `grep -q 'git 2.31' README.md` exits 0
-- [ ] Q8 — Data integrity: the ledger and the shadow log are written through a temp file and a rename; a missing, corrupted or wrong-shaped ledger, log or profile never crashes the check runner and is never overwritten in place; a failed save says so and keeps the check's verdict
-- [ ] Q9 — CI mirror (shellcheck): `act -P ubuntu-26.04=epico-act:26.04 --pull=false -j shellcheck` passes from a clean clone
-- [ ] Q9 — CI mirror (bats): `act -P ubuntu-26.04=epico-act:26.04 --pull=false -j bats` passes from a clean clone
-- [ ] Q9 — CI mirror (validate-examples): `act -P ubuntu-26.04=epico-act:26.04 --pull=false -j validate-examples` passes from a clean clone
-- [ ] Q9 — CI mirror (plugin-validate): `act -P ubuntu-26.04=epico-act:26.04 --pull=false -j plugin-validate` passes from a clean clone
+- [x] All task validations pass
+- [x] All tests written and passing
+- [x] Code integrated (no orphaned implementations)
+- [x] Error handling implemented
+- [x] Q1 — Lint: `shellcheck scripts/*.sh bin/*` exits 0
+- [x] Q2 — Error handling: every new or changed script runs under `set -euo pipefail` and refuses with its reason in its JSON, or, for a usage error (exit 2), on stderr with no JSON; the story's bats cases prove each refusal path
+- [x] Q3 — Unit tests: `bats tests/` passes, as a normal user
+- [x] Q4 — Dependency vulnerabilities (SCA): `trivy fs .` reports no HIGH or CRITICAL
+- [x] Q5 — Secrets: `gitleaks git .` reports no leaks
+- [x] Q6 — README: `grep -q 'epico-check' README.md` exits 0
+- [x] Q7 — Supported and declared runtime: `grep -q 'git 2.31' README.md` exits 0
+- [x] Q8 — Data integrity: the ledger and the shadow log are written through a temp file and a rename; a missing, corrupted or wrong-shaped ledger, log or profile never crashes the check runner and is never overwritten in place; a failed save says so and keeps the check's verdict
+- [x] Q9 — CI mirror (shellcheck): `act -P ubuntu-26.04=epico-act:26.04 --pull=false -j shellcheck` passes from a clean clone
+- [x] Q9 — CI mirror (bats): `act -P ubuntu-26.04=epico-act:26.04 --pull=false -j bats` passes from a clean clone
+- [x] Q9 — CI mirror (validate-examples): `act -P ubuntu-26.04=epico-act:26.04 --pull=false -j validate-examples` passes from a clean clone
+- [x] Q9 — CI mirror (plugin-validate): `act -P ubuntu-26.04=epico-act:26.04 --pull=false -j plugin-validate` passes from a clean clone
 - [ ] Q10 — Pre-commit hook: `pre-commit run --all-files` passes
-- [ ] Q11 — Format version: the ledger and the profile carry `version: 1`; a file of another version is set aside (ledger) or read as absent (profile), never misread
-- [ ] Q12 — Plugin schema: `claude plugin validate --strict` passes
+- [x] Q11 — Format version: the ledger and the profile carry `version: 1`; a file of another version is set aside (ledger) or read as absent (profile), never misread
+- [x] Q12 — Plugin schema: `claude plugin validate --strict` passes

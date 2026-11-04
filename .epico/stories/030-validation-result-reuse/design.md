@@ -3,9 +3,13 @@ story: 030-validation-result-reuse
 type: feature
 scale: full
 engineering: project
-version: 1
+version: 2
 created: 2026-11-04
-status: draft
+last-refined: 2026-11-04
+history:
+  - v1: Initial story
+  - v2: Refine after the run - R2.15, R2.16 and R4.8 added; the design describes the fingerprint, key, ledger lock and run as built; Task 10 adds regression guards for the review findings
+status: in-progress
 ---
 
 # Design - Validation Result Reuse
@@ -85,12 +89,12 @@ A run that must see a FAIL, or must run somewhere other than the working tree, i
 `key = git hash-object --stdin` of a canonical JSON document, with these fields:
 - `command`: the exact command string;
 - `tree`: the fingerprint below;
-- `tools`: one `{probe, output}` per profile probe, with the probe's stdout+stderr, or `absent` when the binary is not on PATH;
+- `tools`: one `{probe, output}` per profile probe. `output` is the git blob hash of the probe's captured stdout+stderr, so a megabyte of output never meets the argument-size limit; it is null when the probe's first word is a plain name that is not on PATH. A first word that is shell syntax (`VAR=1 tool`, a quoted word) is never called absent: bash runs it, and its output is the environment;
 - `inputs`: one `{path, blob}` per profile input, where `blob` is `git hash-object --no-filters -- <path>`, or `absent`;
 - `profile`: the hash of the profile file itself, so editing the profile invalidates every key.
 
 **Fingerprint:**
-1. Copy the real index (`git rev-parse --git-path index`) to a temp file.
+1. Copy the real index (`git rev-parse --git-path index`) to a temp file beside it in the git directory, with `cp -p`: the copy keeps the real index's mtime.
 2. `GIT_INDEX_FILE=<temp> git add -A -- .`
 3. `git rm -r -q --cached --ignore-unmatch -- .epico .epic`
 4. `git write-tree`
@@ -99,16 +103,17 @@ A run that must see a FAIL, or must run somewhere other than the working tree, i
 **No fingerprint is produced** for:
 - a directory that is not a git work tree;
 - any failure of steps 1–4 (an unreadable file, for example);
-- a submodule with uncommitted content (`git status --porcelain --ignore-submodules=none` reporting it).
+- a submodule or nested repository with uncommitted content: after `add -A`, each gitlink (mode 160000) in the temp index is checked with `git -C <path> status --porcelain`.
 
 With no fingerprint, `run` runs the command and records nothing reusable.
 
 **The fingerprint is always reported when it can be computed**, in every mode and for never-list commands too. Not writing to the ledger is a separate decision. `validate-run.sh --only` relies on the fingerprint to keep an unchanged PASS, so a row that skips it would make `--only` re-run unchanged entries.
 
 **Probes and inputs:**
-- Each probe runs under `timeout "${EPICO_REUSE_PROBE_TIMEOUT:-10}" bash -c "<probe>"`. Its output is captured even when it exits non-zero; `java -version`, for one, prints to stderr.
+- Each probe runs from the repository's top level under `timeout "${EPICO_REUSE_PROBE_TIMEOUT:-10}" bash -c "<probe>"`; a limit of 0 or a non-number means the default 10. Its output is captured even when it exits non-zero; `java -version`, for one, prints to stderr.
+- With no `timeout` binary on PATH there is **no key**, with a reason: a probe run unbounded, or not run, would key on an error text.
 - A probe that times out gives **no key**, with a reason naming the probe. The command still runs.
-- A profile input that exists but is a directory or unreadable gives **no key**, with a reason naming the input. The command still runs.
+- A profile input that exists but is a directory, a FIFO or another non-regular file, or unreadable, gives **no key**, with a reason naming the input. The command still runs.
 - In both cases a stable placeholder would hide a real change, so no key is safer than a wrong one.
 
 ### Decision table (`run`)
@@ -124,8 +129,11 @@ The `fingerprint` key in the output is filled whenever it can be computed, in ev
 | `on` | yes | yes | no | no | **reused** | no | no |
 | `on` | yes | no | no | no | ran | yes | no |
 | `shadow`/`on` | yes | — | no | yes | ran | yes (overwrites) | shadow only |
+| any | — | — | — | — | **not started** (no `setsid` or `timeout`, no temp file): FAIL, exit 126 | no | no |
 
 **Only a PASS is ever a hit.** A FAIL is recorded so `stats` can count disagreements, but it is never reused.
+
+**`run` details.** The command runs from the git top level (the current directory outside git), in its own session; a signal to the runner stops that session's process group. A hit returns `decision: reused`, `secs: 0` and the evidence `reused: PASS recorded <time>`: the ledger keeps the verdict, not the output.
 
 ### reuse-profile.json
 
@@ -151,10 +159,13 @@ The `fingerprint` key in the output is filled whenever it can be computed, in ev
 ### Ledger and shadow log
 
 - **Location:** `$(git rev-parse --path-format=absolute --git-common-dir)/epico/reuse/`.
-- **`ledger.json`:** `{"version": 1, "entries": {key: {command, result, fingerprint, at, secs}}}`, capped at **2000 entries**; the oldest `at` is dropped first.
+- **`ledger.json`:** `{"version": 1, "entries": {key: {command, result, fingerprint, at, secs}}}`, capped at **2000 entries**: the oldest `at` of the *other* entries is dropped first, and the entry just written never is, whatever its timestamp says.
+- **The directory also holds** `ledger.lock/` (a lock directory, below), temp files `ledger.XXXXXX` and `shadow.XXXXXX`, and set-aside copies. All of it is under the git directory, so none of it is part of the fingerprint.
+- **The read-modify-write runs under a `mkdir` lock** (`ledger.lock`), because parallel runs share the ledger and a slow run could write back the ledger it read before a newer FAIL was recorded, putting a stale PASS back in play. It waits about 5 s; a lock older than a minute belonged to a killed run and is broken; one that cannot be taken means the result is not recorded, with a warning. `mkdir` needs no flock, which is absent on macOS.
+- **Only the locked write mutates the ledger.** `lookup` and the read that precedes a run never set an unreadable ledger aside; `run` does it inside the lock, right before it records.
 - **An unreadable ledger** — invalid JSON, a wrong shape, or a `version` other than 1 — is never overwritten in place. It is renamed to `ledger.json.unreadable-<UTC timestamp>`, a name that never replaces an earlier set-aside copy, and a fresh ledger starts empty.
 - **`shadow.log`:** JSON lines `{at, command, key, would_reuse, result, secs}`, capped at **5000 lines**; the oldest are dropped first.
-- **Every write** goes to a temp file in the same directory, followed by `mv`.
+- **Every write** goes to a temp file in the same directory, followed by `mv`. The entry is built in the same `jq` call as the merge, from `--arg` values, and the ledger goes in on stdin, so neither a 100 KB command nor 2000 entries meet the argument-size limit. A shadow line starts on a new line when the log lost its final newline.
 
 ### validate-run.sh (changed)
 
@@ -250,14 +261,16 @@ sequenceDiagram
 ## Error Handling Strategy
 
 - **Not a git repo, git failure, unreadable file, dirty submodule:** no fingerprint. The command runs, `reason` names the cause, nothing reusable is recorded.
-- **Profile invalid JSON or unknown `version`:** treated as absent, with a stderr warning. The profile is never modified by `epico-check`. A missing probe binary gives `absent` in the key, which stays stable.
+- **Profile invalid JSON, a wrong shape, several JSON documents, a tool or input holding a newline, or unknown `version`:** treated as absent, with a stderr warning. The profile is never modified by `epico-check`. A missing probe binary gives null in the key, which stays stable.
 - **Ledger unreadable** (invalid JSON, wrong shape, unknown `version`): set aside under a timestamped name, never overwritten; reuse restarts from an empty ledger, which only costs runs.
 - **Ledger or shadow.log write failure:** stderr warning. The command's result is still returned and the exit code is the command's. Reuse is an optimisation, never a reason to fail a check. Every write and every `mkdir` of the reuse directory is called with its error handled; none relies on `set -e`.
 - **Setting an unreadable ledger aside fails** (read-only directory): stderr warning; the check runs as if nothing were recorded.
 - **A probe times out, or an input is unreadable:** no key, with a reason; the command runs.
 - **`profile --detect` meets a malformed manifest or no git work tree:** it skips what it cannot read (the `packageManager` probe; the inputs), warns, and still prints a profile with exit 0.
 - **`lookup` is unusable inside `validate-run.sh --only`:** the entry is re-run.
-- **Lost update** (two writers at once): the second `mv` wins. The lost entry costs one re-run, which is the safe direction.
+- **Two writers at once:** serialised by the ledger lock (see Ledger). A lost update is not always the safe direction: an older PASS written back over a newer FAIL for the same key would be reused in mode `on`.
+- **The command cannot be started** (no `setsid` or `timeout`, no temp file): FAIL with exit 126, and nothing is recorded, so it can never replace a real PASS.
+- **`stats` on an unreadable or garbled shadow log:** lines that are not objects are skipped, a non-numeric `secs` counts as nothing, an unreadable log gives zeros with a warning. It always prints its JSON.
 - **Timeout:** exit 124, mapped to FAIL with evidence `timed out after <s>s`, as validate-run does today.
 - **Hook failure:** fail open.
 
@@ -336,12 +349,12 @@ sequenceDiagram
 
 - **GOTCHA: git exclude pathspec** — `git add -A -- . ':(exclude).epico'` exits 1 ("paths are ignored by one of your .gitignore files") when `.epico/` is gitignored. Measured on a real project. **Fix:** add everything, then `git rm -r -q --cached --ignore-unmatch -- .epico .epic` on the temp index.
 - **GOTCHA: git check-ignore** — reports a gitignored directory that holds a tracked file as *not* ignored. Seen in a real project: one archived `tasks.md` was tracked under an ignored `.epico/`. **Fix:** never branch on check-ignore; the removal above covers every state.
-- **GOTCHA: temp index** — an empty `GIT_INDEX_FILE` re-hashes the whole tree. **Fix:** start from a copy of `git rev-parse --git-path index` (worktree-aware), which keeps the stat cache. That is what gave 8–20 ms.
+- **GOTCHA: temp index** — an empty `GIT_INDEX_FILE` re-hashes the whole tree. **Fix:** start from a copy of `git rev-parse --git-path index` (worktree-aware), which keeps the stat cache. That is what gave 8–20 ms. **Copy with `cp -p`:** git decides whether a recorded stat can be trusted by comparing each entry's mtime with the index file's own mtime ("racily clean"); a copy with a fresh mtime switches that off, and a same-size edit made in the second the index was written leaves the fingerprint unchanged, a false green.
 - **GOTCHA: git common dir** — `git rev-parse --git-common-dir` is relative (`.git`) in the main worktree and absolute in linked ones. **Fix:** use `--path-format=absolute` (git ≥ 2.31; 2.56 here).
-- **GOTCHA: submodules** — `git add -A` records a submodule's commit, not its uncommitted changes, so a dirty submodule would fingerprint as clean. **Fix:** detect it through `git status --porcelain --ignore-submodules=none` and produce no fingerprint.
+- **GOTCHA: submodules** — `git add -A` records a submodule's commit, not its uncommitted changes, so a dirty submodule would fingerprint as clean. **Fix:** after `add -A`, check each gitlink in the temp index with `git -C <path> status --porcelain` and produce no fingerprint when one is dirty. That covers submodules and nested repositories that are not registered as submodules, which `git status` of the outer repository does not show.
 - **GOTCHA: hashing inputs** — `sha256sum` is GNU, macOS ships `shasum`. **Fix:** use `git hash-object --no-filters -- <path>`, which is git-only, portable, and writes no object without `-w`.
 - **GOTCHA: timing** — `date +%s%N` is unsupported on macOS. **Fix:** measure with bash `SECONDS` and stamp with `date -u +%Y-%m-%dT%H:%M:%SZ`.
-- **GOTCHA: concurrent writers** — parallel Executors in worktrees write the same ledger. flock is util-linux, outside the constitution's bash+jq+git, and absent on macOS. **Fix:** write a temp file in the same directory, then `mv`, so the file is never torn. A lost update costs a re-run.
+- **GOTCHA: concurrent writers** — parallel Executors in worktrees write the same ledger. flock is util-linux, outside the constitution's bash+jq+git, and absent on macOS. **Fix:** a `mkdir` lock around the read-modify-write, and a temp file in the same directory then `mv`, so the file is never torn. Without the lock a slow writer can put an older PASS back over a newer FAIL; that is a stale PASS reused in mode `on`, not a harmless lost update.
 - **GOTCHA: moving validate-run's run semantics** — they must move intact (`setsid --fork --wait`, `timeout`, process-group kill, output to a file, not a pipe). validate-run.sh's own comment records a `cargo run &` holding a pipe open until the timeout (300 s lost).
 - **GOTCHA: profile format** — YAML would need yq, which the constitution does not allow. **Fix:** the profile is JSON.
 - **GOTCHA: ambiguous gate prefix** — two `Q5` lines are closed by `gate:<prefix>`. **Fix:** the prefixes must differ before the colon (`(api)`, `(checkout)`), or `close-subtask.sh` refuses the ambiguous match.
