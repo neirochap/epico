@@ -16,7 +16,7 @@ setup() {
 
 @test "every epico-* command the references name has an executable wrapper" {
   cd "$ROOT"
-  names=$(git grep -ohE '\bepico-(archive|claude-md|close|gitpolicy|git-status|index|integration|migrate|next-number|progress|doctor|deviation|inbox|jargon|report|stale|test-diff|supersede|telemetry|validate|validated|checkpoint|depdiff|xref)\b' -- references skills | sort -u)
+  names=$(git grep -ohE '\bepico-(archive|claude-md|close|gitpolicy|git-status|index|integration|migrate|next-number|progress|doctor|deviation|inbox|jargon|report|stale|test-diff|supersede|telemetry|validate|validated|check|checkpoint|depdiff|xref)\b' -- references skills | sort -u)
   [ -n "$names" ]
   for n in $names; do
     [ -x "bin/$n" ] || { echo "missing wrapper: bin/$n"; return 1; }
