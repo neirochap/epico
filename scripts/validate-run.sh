@@ -3,7 +3,7 @@
 # Auditor's Part 1 report — so the deterministic half of validation costs seconds
 # instead of a sub-agent's turns.
 #
-#   validate-run.sh --story <dir> [--only <id,id,...>] [--timeout <s>]
+#   validate-run.sh --story <dir> [--only <id,id,...>] [--timeout <s>] [--fresh]
 #
 # Reads tasks.md. Every [x] sub-task's `Validation:` field is run from its first
 # backtick span — and a field with more than one span is JUDGE once that first
@@ -15,13 +15,23 @@
 # a gate with no command — is JUDGE:
 # the Auditor settles those, and only those.
 #
+# Each command goes through check-reuse.sh run: in the project's reuse mode `on`, a
+# PASS recorded for the same command on the same code is reused instead of run.
+# --fresh runs every command again. What this script checks itself (the Tests
+# path, the Commit in git log) is checked on every run, reused or not.
+#
 # --only re-runs the named entries (sub-task ids, or gate:<text prefix>) and keeps
 # every other entry of the previous run: a revalidation re-checks the failures,
-# never the whole story.
+# never the whole story. A kept entry that PASSED is kept only on the code it
+# passed on (its recorded fingerprint equals the current one); on changed code, or
+# with no fingerprint to compare, it runs again. SKIP, JUDGE and FAIL entries are
+# kept as they were. It needs a previous full run: with none it exits 2.
 #
-# Writes .draft/validation-run.json (the machine form) and
+# Writes .draft/validation-run.json (the machine form; every entry also carries
+# `reused` and the `fingerprint` it was settled on) and
 # .draft/validation-report.yaml (the schema validate-mode.md defines, with
-# verdict pass | fail | pending — pending while a JUDGE entry is open).
+# verdict pass | fail | pending — pending while a JUDGE entry is open; each
+# result and gate adds `reused:`).
 # Output: one JSON line {verdict, pass, fail, skip, judge, report}.
 # Exit 0 on pass or pending, 1 on fail, 2 on bad usage.
 
@@ -29,12 +39,13 @@ set -euo pipefail
 
 usage() { sed -n '5,5p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
-STORY="" ONLY="" TIMEOUT=300
+STORY="" ONLY="" TIMEOUT=300 FRESH=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --story) STORY="${2-}"; shift 2 ;;
     --only) ONLY="${2-}"; shift 2 ;;
     --timeout) TIMEOUT="${2-}"; shift 2 ;;
+    --fresh) FRESH=1; shift ;;
     -h | --help) usage; exit 0 ;;
     *) echo "validate-run.sh: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -51,6 +62,7 @@ STORY="$(cd "$STORY" && pwd)"
 ROOT="$(cd "$STORY/../../.." && pwd)"
 DRAFT="$STORY/.draft"
 JSON="$DRAFT/validation-run.json" YAML="$DRAFT/validation-report.yaml"
+CHECK_REUSE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-reuse.sh"
 mkdir -p "$DRAFT"
 
 # One row per entry, fields split by \x1f: kind, id, box, command-or-text,
@@ -102,39 +114,24 @@ runnable() {  # <command> — is its first word something the shell can run?
   esac
 }
 
-# Output goes to a file, not a pipe, and the command runs in its own session:
-# a `cargo run &` inside a gate kept a captured pipe open until the timeout
-# (300 s lost in a rust run). The session is killed once the command returns,
-# so a server it started never outlives its check.
-run_cmd() {  # <command> — prints "<exit>\t<evidence line>"
-  local log sidf code evidence
-  log="$(mktemp)" sidf="$(mktemp)"
-  set +e
-  # --fork makes setsid succeed even where this shell's job is a group leader;
-  # the new session's leader writes its own pid, which names the group to kill.
-  # shellcheck disable=SC2016  # $$ and $0 belong to the inner bash
-  (cd "$ROOT" && setsid --fork --wait bash -c 'echo "$$" > "$0"; exec timeout "$1" bash -c "$2"' "$sidf" "$TIMEOUT" "$1") </dev/null >"$log" 2>&1
-  code=$?
-  set -e
-  if [ -s "$sidf" ]; then kill -TERM -- "-$(cat "$sidf")" 2>/dev/null || true; fi
-  if [ "$code" -eq 124 ]; then
-    evidence="timed out after ${TIMEOUT}s"
+# Runs one command through check-reuse.sh and sets RUN_CODE, RUN_EVIDENCE,
+# RUN_REUSED and RUN_FP (a JSON value). A missing or invalid JSON line is a
+# failed run (exit 1) whose evidence is what the runner wrote to stderr.
+run_check() {  # <command>
+  local errf line cmd=(bash "$CHECK_REUSE" run --timeout "$TIMEOUT")
+  [ "$FRESH" -eq 1 ] && cmd+=(--fresh)
+  errf="$(mktemp)"
+  line="$(cd "$ROOT" && "${cmd[@]}" -- "$1" </dev/null 2>"$errf")" || true
+  if printf '%s' "$line" | jq -e 'type == "object" and (.exit | type) == "number" and (.result == "PASS" or .result == "FAIL")' >/dev/null 2>&1; then
+    RUN_CODE="$(printf '%s' "$line" | jq -r '.exit')"
+    RUN_EVIDENCE="$(printf '%s' "$line" | jq -r '.evidence // ""')"
+    RUN_REUSED="$(printf '%s' "$line" | jq -r '.decision == "reused"')"
+    RUN_FP="$(printf '%s' "$line" | jq -c '.fingerprint // null')"
   else
-    evidence="$(tr -d '\r' < "$log" | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' | runner_totals)"
+    RUN_CODE=1 RUN_REUSED=false RUN_FP=null
+    RUN_EVIDENCE="check-reuse.sh gave no result: $(tr '\r\n' '  ' <"$errf" | cut -c1-160)"
   fi
-  rm -f "$log" "$sidf"
-  printf '%s\t%s\n' "$code" "$(printf '%s' "$evidence" | cut -c1-200)"
-}
-
-# cargo prints one "test result:" per test binary and ends on the doc-test one,
-# often "0 passed" — so the last line alone reads as if nothing ran. With more
-# than one summary, they are added up; any other output keeps its last line.
-runner_totals() {
-  local out
-  out="$(cat)"
-  printf '%s' "$out" | grep -oE 'test result: [a-z]+\. [0-9]+ passed; [0-9]+ failed' |
-    awk '{ p += $4; f += $6; n++ } END { if (n > 1) printf "cargo test: %d passed, %d failed in %d binaries", p, f, n }' |
-    grep . || printf '%s' "$out" | awk 'NF' | tail -1
+  rm -f "$errf"
 }
 
 selected() {  # <kind> <id> — is this entry re-run under --only?
@@ -148,7 +145,7 @@ selected() {  # <kind> <id> — is this entry re-run under --only?
 }
 
 check() {  # <kind> <id> <box> <value> <tests> <commit> <whole text if compound> — prints one JSON entry
-  local kind=$1 id=$2 box=$3 val=$4 tst=$5 cmt=$6 more=$7 result detail qualifier="" res code last
+  local kind=$1 id=$2 box=$3 val=$4 tst=$5 cmt=$6 more=$7 result detail qualifier="" code last reused=false fp=null
   if [ "$box" = "~" ]; then
     result=SKIP qualifier="$val" detail="closed without the work"
   elif [ "$box" = " " ] && [ "$kind" = sub ]; then
@@ -156,7 +153,7 @@ check() {  # <kind> <id> <box> <value> <tests> <commit> <whole text if compound>
   elif [ -z "$val" ] || [ "${val#!}" != "$val" ] || ! runnable "$val"; then
     result=JUDGE detail="${val#!}"; [ -z "$detail" ] && detail="no command in the text"
   else
-    res="$(run_cmd "$val")"; code="${res%%$'\t'*}"; last="${res#*$'\t'}"
+    run_check "$val"; code="$RUN_CODE" last="$RUN_EVIDENCE" reused="$RUN_REUSED" fp="$RUN_FP"
     if [ "$code" -eq 0 ]; then result=PASS; else result=FAIL; fi
     detail="\`$val\` exit $code${last:+ — $last}"
     if [ "$result" = PASS ] && [ -n "$more" ]; then result=JUDGE detail="$detail; the rest is not run: $more"; fi
@@ -168,7 +165,9 @@ check() {  # <kind> <id> <box> <value> <tests> <commit> <whole text if compound>
     fi
   fi
   jq -nc --arg kind "$kind" --arg id "$id" --arg result "$result" --arg detail "$detail" --arg q "$qualifier" \
-    '{kind: $kind, id: $id, result: $result, qualifier: (if $q == "" then null else $q end), detail: $detail}'
+    --argjson reused "$reused" --argjson fp "$fp" \
+    '{kind: $kind, id: $id, result: $result, qualifier: (if $q == "" then null else $q end), detail: $detail,
+      reused: $reused, fingerprint: $fp}'
 }
 
 # --only keeps the entries of a previous run; with none there is nothing to keep,
@@ -179,9 +178,29 @@ if [ -n "$ONLY" ] && [ ! -f "$JSON" ]; then
 fi
 PREV='[]'
 [ -n "$ONLY" ] && [ -f "$JSON" ] && PREV="$(jq -c '.entries' "$JSON")"
+
+# Under --only a previous PASS is kept only on the code it passed on. The current
+# fingerprint is whatever `check-reuse.sh lookup` reports; when lookup is unusable
+# (a non-zero exit, no output, invalid JSON, a null fingerprint) it is unknown, and
+# every previous PASS runs again: "unchanged" is a claim only a fingerprint can make.
+CUR_FP=""
+if [ -n "$ONLY" ]; then
+  lookup_line="$(cd "$ROOT" && bash "$CHECK_REUSE" lookup -- true 2>/dev/null)" || lookup_line=""
+  CUR_FP="$(printf '%s' "$lookup_line" | jq -r 'if type == "object" and (.fingerprint | type) == "string" then .fingerprint else "" end' 2>/dev/null)" || CUR_FP=""
+fi
+
+stale() {  # <previous entry> — does an unselected entry have to run again?
+  printf '%s' "$1" | jq -e --arg fp "$CUR_FP" \
+    '.result == "PASS" and ($fp == "" or (.fingerprint // null) != $fp)' >/dev/null 2>&1
+}
+
 NEW="$(entries | while IFS=$'\x1f' read -r kind id box val tst cmt more; do
   if selected "$kind" "$id"; then check "$kind" "$id" "$box" "$val" "$tst" "$cmt" "$more"
-  else printf '%s' "$PREV" | jq -c --arg k "$kind" --arg i "$id" '.[] | select(.kind == $k and .id == $i)'; fi
+  else
+    prev="$(printf '%s' "$PREV" | jq -c --arg k "$kind" --arg i "$id" '.[] | select(.kind == $k and .id == $i)')"
+    if [ -n "$prev" ] && stale "$prev"; then check "$kind" "$id" "$box" "$val" "$tst" "$cmt" "$more"
+    elif [ -n "$prev" ]; then printf '%s\n' "$prev"; fi
+  fi
 done | jq -sc '.')"
 
 # "All task validations pass" is the sub-task results themselves: derived on
@@ -208,10 +227,10 @@ jq -r '
   "verdict: \(.verdict)",
   "results:",
   (.entries[] | select(.kind == "sub") |
-    "  - task: \(.id | tojson)", "    result: \(.result)", "    qualifier: \(.qualifier // null | tojson)", "    detail: \(.detail | tojson)"),
+    "  - task: \(.id | tojson)", "    result: \(.result)", "    qualifier: \(.qualifier // null | tojson)", "    detail: \(.detail | tojson)", "    reused: \(.reused // false)"),
   "gates:",
   (.entries[] | select(.kind == "gate") |
-    "  - gate: \(.id | tojson)", "    result: \(.result)", "    evidence: \(.detail | tojson)")
+    "  - gate: \(.id | tojson)", "    result: \(.result)", "    evidence: \(.detail | tojson)", "    reused: \(.reused // false)")
 ' "$JSON" > "$YAML"
 
 jq -c --arg report "$YAML" '{verdict, pass: ([.entries[] | select(.result == "PASS")] | length),

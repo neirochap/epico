@@ -109,15 +109,19 @@ full_run() {  # --only needs a previous run: record one before revalidating
   jq -e '.entries[] | select(.id == "1.1") | .detail | test("commit not found")' "$STORY/.draft/validation-run.json"
 }
 
-@test "validate-run --only re-runs the named entries and keeps the rest" {
+@test "validate-run --only re-runs the named entries, and an unselected PASS whose code changed" {
   run bash "$ROOT/scripts/validate-run.sh" --story "$STORY"
   sed -i 's/`false` exits 0/`true` exits 0/' "$STORY/tasks.md"
+  # A new untracked file is a code change: 1.1 passed on other code, so it runs
+  # again and is settled on the new fingerprint. Keeping an unselected PASS on
+  # unchanged code is tests/validate-run-only-fingerprint.bats.
   touch "$PROJ/tests/absent_test.sh"
-  before=$(jq -c '.entries[] | select(.id == "1.1")' "$STORY/.draft/validation-run.json")
+  before=$(jq -r '.entries[] | select(.id == "1.1") | .fingerprint' "$STORY/.draft/validation-run.json")
   run bash "$ROOT/scripts/validate-run.sh" --story "$STORY" --only 1.2,1.6
   [ "$(result 1.2)" = PASS ]
   [ "$(result 1.6)" = PASS ]
-  [ "$(jq -c '.entries[] | select(.id == "1.1")' "$STORY/.draft/validation-run.json")" = "$before" ]
+  [ "$(result 1.1)" = PASS ]
+  [ "$(jq -r '.entries[] | select(.id == "1.1") | .fingerprint' "$STORY/.draft/validation-run.json")" != "$before" ]
   [ "$(jq -r .verdict <<< "$output")" = pending ]
 }
 
