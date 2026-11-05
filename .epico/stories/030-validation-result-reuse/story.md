@@ -3,13 +3,14 @@ story: 030-validation-result-reuse
 type: feature
 scale: full
 engineering: project
-version: 3
+version: 4
 created: 2026-11-04
 last-refined: 2026-11-05
 history:
   - v1: Initial story
   - v2: Refine after the run - R2.15, R2.16 and R4.8 added; the design describes the fingerprint, key, ledger lock and run as built; Task 10 adds regression guards for the review findings
   - v3: Refine after validation fixes round 1 - R4.8 reworded, R4.9 to R4.12 added; the design's Ledger describes the owner token and void markers; Task 12 hardens the ledger lock
+  - v4: Refine after the second validation - uutils mkdir is not atomic, so the owner file, created with O_EXCL, decides who holds the ledger lock; Task 13
 status: in-progress
 ---
 

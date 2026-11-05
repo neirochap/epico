@@ -6,13 +6,14 @@ scale_reason: a new contract (ledger, profile and epico-check JSON) read by scri
 engineering: project
 requester: developer
 run-model: sonnet
-version: 3
+version: 4
 created: 2026-11-04
 last-refined: 2026-11-05
 history:
   - v1: Initial story
   - v2: Refine after the run - R2.15, R2.16 and R4.8 added; the design describes the fingerprint, key, ledger lock and run as built; Task 10 adds regression guards for the review findings
   - v3: Refine after validation fixes round 1 - R4.8 reworded, R4.9 to R4.12 added; the design's Ledger describes the owner token and void markers; Task 12 hardens the ledger lock
+  - v4: Refine after the second validation - uutils mkdir is not atomic, so the owner file, created with O_EXCL, decides who holds the ledger lock; Task 13
 status: in-progress
 ---
 
@@ -513,6 +514,36 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Quality: Q1, Q3
 
   - Commit: "fix(030): void every dropped non-PASS, bound the voids, end the lock wait and release only our own lock"
+
+- [x] 13 - The owner file decides who holds the ledger lock
+  - _Complexity: High | Tests: Integration | Risks: a claim that loses must never remove the winner's directory; a create that cannot be made must not spin forever | Dependencies: Task 12_
+  - Objective: one run holds the ledger lock at a time on any coreutils — uutils' `mkdir` included — and the CI mirror's parallel-writer cases pass
+
+  - [x] 13.1 - Claim the lock with an O_EXCL owner file
+    - Context:
+      - Files: `scripts/check-reuse.sh` (`ledger_lock`, `ledger_unlock`), `tests/check-reuse-concurrency.bats`, `tests/check-reuse-lock.bats`, `tests/check-reuse-lock-release.bats`, `tests/lib/reuse-fixture.sh`
+    - Objective: a run that creates the lock directory holds the lock only if it also creates the owner file, so a `mkdir` that lets several racers succeed still lets one holder in
+    - ToDo:
+      - **Test:** copy the authored test from `.draft/authored-tests/tests/check-reuse-lock-claim.bats`.
+      - **Claim:** after `mkdir`, create `ledger.lock/owner` with the token under `set -o noclobber` (bash opens it `O_EXCL`); that create, not the `mkdir`, takes the lock.
+      - **Lose cleanly:** a run whose create fails runs `rmdir` on the lock — which refuses a directory holding another run's owner — and goes on waiting; a token that cannot be created is no lock, so drop the empty-token fallback.
+    - Tests: Integration · `tests/check-reuse-lock-claim.bats` — with a `mkdir` on PATH that succeeds on an existing directory (uutils' race at its worst), twelve parallel runs on distinct keys keep twelve entries and leave no lock behind; a FAIL recorded while six PASS writers run on the same key wins and every writer's entry is kept; a run that finds another run's owner file in a directory its own `mkdir` reported as created leaves that owner in place and records after it releases
+    - Validation: `bats tests/check-reuse-lock-claim.bats tests/check-reuse-lock.bats tests/check-reuse-lock-release.bats tests/check-reuse-concurrency.bats`
+    - Requirements: R4.8, R4.11
+    - Quality: Q1, Q2, Q3, Q8
+
+  - [x] 13.2 - The whole local check and the CI mirror
+    - Context:
+      - Files: `RELEASING.md` (the local recipe), `.github/workflows/shell.yml` (the `bats` job)
+    - Objective: the suite passes on this machine and on the CI image, where uutils' `mkdir` races
+    - ToDo:
+      - **Run** `shellcheck scripts/*.sh bin/*`, then the CI mirror's `bats` job, as a normal user.
+      - **Record each result.** Fix a red in the owning sub-task's files, never by weakening a check.
+    - Tests: None — verification only; the CI mirror runs the whole suite on Ubuntu 26.04
+    - Validation: `shellcheck scripts/*.sh bin/* && act -P ubuntu-26.04=epico-act:26.04 --pull=false -j bats`
+    - Quality: Q1, Q3, Q9
+
+  - Commit: "fix(030): the owner file, created with O_EXCL, decides who holds the ledger lock"
 
 ## Quality Gates
 

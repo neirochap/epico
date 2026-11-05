@@ -568,17 +568,35 @@ ledger_read() {
 # ledger_lock — serialises the read-modify-write of the ledger between runs that
 # share it (parallel Executors in worktrees do). Without it, a slow run could
 # write back the ledger it read before a newer FAIL was recorded, and a stale PASS
-# would be reused in mode `on`. `mkdir` is atomic and needs no flock (absent on
-# macOS). The holder names itself in ledger.lock/owner, and the wait — about 5 s —
-# counts one holder: it restarts whenever the owner changes, so a queue of
-# writers handing the lock on never makes a newer FAIL give up. A lock older than
-# a minute belonged to a run that was killed, and is broken; one that cannot be
-# moved aside ends the wait, since waiting on it again would never end. Returns 1
-# when the lock cannot be taken.
+# would be reused in mode `on`. No flock: it is absent on macOS. The lock is taken
+# by creating ledger.lock/owner, not by the `mkdir` of its directory — uutils'
+# `mkdir` lets racing callers all succeed — and the wait, about 5 s, counts one
+# holder: it restarts whenever the owner changes, so a queue of writers handing
+# the lock on never makes a newer FAIL give up. A lock older than a minute
+# belonged to a run that was killed, and is broken; one that cannot be moved
+# aside ends the wait, since waiting on it again would never end. Returns 1 when
+# the lock cannot be taken.
 ledger_lock() {
-  local lock="$LEDGER_DIR/ledger.lock" tries=0 absent=0 owner seen=""
+  local lock="$LEDGER_DIR/ledger.lock" tries=0 absent=0 owner seen="" token
 
-  while ! mkdir -- "$lock" 2>/dev/null; do
+  while :; do
+    if mkdir -- "$lock" 2>/dev/null; then
+      # The claim: noclobber makes bash open the owner file O_EXCL, so one run
+      # creates it on any coreutils. The token only has to differ from the
+      # previous holder's. A run that loses leaves the winner's directory —
+      # rmdir refuses one holding an owner — and waits like any waiter.
+      token="$$ $RANDOM"
+      # Set before the claim, so a signal during it still releases an owner file
+      # that is ours: ledger_unlock compares it with the token, never another's.
+      LOCK_DIR="$lock"
+      LOCK_TOKEN="$token"
+      if (set -o noclobber && printf '%s\n' "$token" >"$lock/owner") 2>/dev/null; then
+        return 0
+      fi
+      LOCK_DIR=""
+      LOCK_TOKEN=""
+      rmdir -- "$lock" 2>/dev/null || true
+    fi
     if [ -d "$lock" ]; then
       absent=0
       owner=$(cat -- "$lock/owner" 2>/dev/null || true)
@@ -608,12 +626,6 @@ ledger_lock() {
     fi
     sleep 0.1
   done
-  LOCK_DIR="$lock"
-  # Only has to differ from the previous holder's token; a waiter that cannot
-  # read it sees an empty owner, which still changes when the next holder writes.
-  # A token that could not be written is no token: release then expects none.
-  LOCK_TOKEN="$$ $RANDOM"
-  printf '%s\n' "$LOCK_TOKEN" 2>/dev/null >"$lock/owner" || LOCK_TOKEN=""
 }
 
 # ledger_unlock — releases the lock only while its owner token is still this
