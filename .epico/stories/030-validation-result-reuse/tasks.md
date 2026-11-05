@@ -436,6 +436,39 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
 
   - Commit: "test(030): regression guards for the review findings"
 
+- [x] 11 - Validation fixes — round 1
+  - _Complexity: High | Tests: Integration | Risks: a lock wait that never gives up hangs the runner; a void marker that is never read, or never cleared, changes reuse in silence | Dependencies: Task 10_
+  - Objective: the two reds the CI mirror (`act -j bats`) found in the Task 10 guards are fixed where they are produced, and the suite passes on a clean runner
+
+  - [x] 11.1 - A nested repository commits with the fixture's identity
+    - Context:
+      - Files: `tests/check-reuse-edges.bats` (the nested-repository case), `tests/lib/reuse-fixture.sh` (`commit_all`)
+    - Objective: the nested-repository case runs on a machine with no git identity, as the CI runner is
+    - ToDo:
+      - **Commit the inner repository** with `-c user.email=t@example.invalid -c user.name=t`, as `commit_all` does for the outer one. Setup only: no assertion changes.
+    - Tests: None — setup repair of an existing guard; the Validation runs it with no git identity
+    - Acceptance: with no git identity on the machine, `tests/check-reuse-edges.bats` passes
+    - Validation: `env -u EMAIL -u XDG_CONFIG_HOME HOME="$(mktemp -d)" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.useConfigOnly GIT_CONFIG_VALUE_0=true bats tests/check-reuse-edges.bats`
+    - Requirements: R2.11
+    - Quality: Q3
+
+  - [x] 11.2 - The ledger lock waits while it changes hands, and a dropped FAIL voids its key
+    - Context:
+      - Files: `scripts/check-reuse.sh` (`ledger_lock`, `ledger_unlock`, `ledger_record`, `ledger_write`, `prepare`, `cleanup`), `tests/check-reuse-concurrency.bats`, `tests/lib/reuse-fixture.sh`
+    - Objective: a newer FAIL is recorded however many writers queue for the lock, and a result the lock kept out never leaves an older PASS reusable
+    - ToDo:
+      - **Test:** copy the authored test from `.draft/authored-tests/tests/check-reuse-lock.bats`.
+      - **The holder names itself:** right after its `mkdir`, the holder writes a token to `ledger.lock/owner`; release removes the token, then the directory.
+      - **The wait counts one holder:** the ~5 s budget restarts whenever the owner token changes; a lock with one owner, or none, past the budget still gives up, records nothing and warns.
+      - **A dropped non-PASS voids its key:** on that give-up, create `void.<key>` beside the ledger; `prepare` never reports a hit for a voided key; the next locked write for that key removes the marker. A marker that cannot be written is named in the warning.
+      - **Design:** record the lock change with `epico-deviation`, with a follow-up to refine `design.md` (Ledger) and R4.8.
+    - Tests: Integration · `tests/check-reuse-lock.bats` — a lock that changes hands for longer than the wait does not make a FAIL's record give up, and the ledger holds the FAIL; a lock held by one owner past the wait leaves the FAIL unrecorded, yet the key's earlier PASS is not reused in mode `on` (decision `ran`); the next recorded run of that key clears the void, and a PASS recorded after it is reused again; release leaves no `ledger.lock` behind
+    - Validation: `bats tests/check-reuse-lock.bats tests/check-reuse-concurrency.bats`
+    - Requirements: R4.8
+    - Quality: Q1, Q2, Q3, Q8
+
+  - Commit: "fix(030): keep a newer FAIL under lock contention, and commit the nested repo with an identity"
+
 ## Quality Gates
 
 - [ ] All acceptance criteria validated
@@ -457,4 +490,4 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
 - [x] Q9 — CI mirror (plugin-validate): `act -P ubuntu-26.04=epico-act:26.04 --pull=false -j plugin-validate` passes from a clean clone
 - [ ] Q10 — Pre-commit hook: `pre-commit run --all-files` passes
 - [x] Q11 — Format version: the ledger and the profile carry `version: 1`; a file of another version is set aside (ledger) or read as absent (profile), never misread
-- [x] Q12 — Plugin schema: `claude plugin validate --strict` passes
+- [x] Q12 — Plugin schema: `for p in .claude-plugin/plugin.json .claude-plugin/marketplace.json skills agents; do claude plugin validate --strict "$p" || exit 1; done` passes

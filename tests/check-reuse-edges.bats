@@ -205,7 +205,7 @@ shadow_line() {  # <at> <command> <would_reuse> <result> <secs-json>
   git init -q inner
   printf 'a\n' > inner/f.txt
   git -C inner add -A
-  git -C inner commit -q -m inner
+  git -C inner -c user.email=t@example.invalid -c user.name=t commit -q -m inner
   # Nothing of it is added to the outer index: it is a nested repository, not a
   # registered submodule.
   clean=$(fp_now)
@@ -238,7 +238,7 @@ shadow_line() {  # <at> <command> <would_reuse> <result> <secs-json>
   # Committed, it is clean again — and the code is no longer the same code.
   printf 'c\n' >> inner/f.txt
   git -C inner add -A
-  git -C inner commit -q -m "inner, changed"
+  git -C inner -c user.email=t@example.invalid -c user.name=t commit -q -m "inner, changed"
   is_hash "$(fp_now)"
   [ "$(fp_now)" != "$clean" ]
 }

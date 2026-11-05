@@ -55,7 +55,9 @@
 # has the wrong shape or another version is renamed to
 # ledger.json.unreadable-<UTC stamp> (never replacing an earlier copy) and the
 # run goes on as if nothing were recorded. A failure to record or to set aside
-# warns on stderr and changes neither the verdict nor the exit code.
+# warns on stderr and changes neither the verdict nor the exit code. A FAIL the
+# ledger lock kept out leaves void.<key> beside the ledger: that key is no hit
+# until its next recorded run, so its older PASS is never reused.
 #
 # `profile --detect` prints a proposed profile and writes nothing: one version
 # probe per toolchain whose manifest is in the project's top level AND whose binary
@@ -144,7 +146,10 @@ cleanup() {
   if [ -n "$RUN_SID" ] && [ -s "$RUN_SID" ]; then
     kill -TERM -- "-$(cat -- "$RUN_SID" 2>/dev/null)" 2>/dev/null || true
   fi
-  if [ -n "$LOCK_DIR" ]; then rmdir -- "$LOCK_DIR" 2>/dev/null || true; fi
+  if [ -n "$LOCK_DIR" ]; then
+    rm -f -- "$LOCK_DIR/owner" 2>/dev/null || true
+    rmdir -- "$LOCK_DIR" 2>/dev/null || true
+  fi
   if [ -n "$IDX" ]; then rm -f -- "$IDX"; fi
   if [ -n "$PROBE_TMP" ]; then rm -f -- "$PROBE_TMP"; fi
   if [ -n "$RUN_LOG" ]; then rm -f -- "$RUN_LOG"; fi
@@ -561,14 +566,22 @@ ledger_read() {
 # share it (parallel Executors in worktrees do). Without it, a slow run could
 # write back the ledger it read before a newer FAIL was recorded, and a stale PASS
 # would be reused in mode `on`. `mkdir` is atomic and needs no flock (absent on
-# macOS). Waits about 5 s; a lock older than a minute belonged to a run that was
-# killed, and is broken. Returns 1 when the lock cannot be taken.
+# macOS). The holder names itself in ledger.lock/owner, and the wait — about 5 s —
+# counts one holder: it restarts whenever the owner changes, so a queue of
+# writers handing the lock on never makes a newer FAIL give up. A lock older than
+# a minute belonged to a run that was killed, and is broken. Returns 1 when the
+# lock cannot be taken.
 ledger_lock() {
-  local lock="$LEDGER_DIR/ledger.lock" tries=0 absent=0
+  local lock="$LEDGER_DIR/ledger.lock" tries=0 absent=0 owner seen=""
 
   while ! mkdir -- "$lock" 2>/dev/null; do
     if [ -d "$lock" ]; then
       absent=0
+      owner=$(cat -- "$lock/owner" 2>/dev/null || true)
+      if [ "$owner" != "$seen" ]; then
+        seen=$owner
+        tries=0
+      fi
       tries=$((tries + 1))
       if [ "$tries" -ge 50 ]; then
         [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] || return 1
@@ -586,11 +599,29 @@ ledger_lock() {
     sleep 0.1
   done
   LOCK_DIR="$lock"
+  # Only has to differ from the previous holder's token; a waiter that cannot
+  # read it sees an empty owner, which still changes when the next holder writes.
+  printf '%s %s\n' "$$" "$RANDOM" 2>/dev/null >"$lock/owner" || true
 }
 
 ledger_unlock() {
-  if [ -n "$LOCK_DIR" ]; then rmdir -- "$LOCK_DIR" 2>/dev/null || true; fi
+  if [ -n "$LOCK_DIR" ]; then
+    rm -f -- "$LOCK_DIR/owner" 2>/dev/null || true
+    rmdir -- "$LOCK_DIR" 2>/dev/null || true
+  fi
   LOCK_DIR=""
+}
+
+# ledger_void <result> — a non-PASS the lock kept out must not leave an older
+# PASS for KEY reusable: void.<key> beside the ledger makes `prepare` report no
+# hit until the next locked write for KEY clears it. One empty file, written
+# without the lock, since the lock is exactly what could not be had. `true`, not
+# `:`: a failed redirection on a special builtin ends a POSIX-mode shell.
+ledger_void() {
+  if [ "$1" = PASS ]; then return 0; fi
+  if ! true 2>/dev/null >"$LEDGER_DIR/void.$KEY"; then
+    warn "the key could not be voided either: an earlier PASS for this command may still be reused; run it with --fresh"
+  fi
 }
 
 # ledger_record <result> <secs> <command> — records the run under KEY. The file is
@@ -603,6 +634,7 @@ ledger_record() {
   fi
   if ! ledger_lock; then
     warn "the result was not recorded: $LEDGER_DIR cannot be written to, or is locked"
+    ledger_void "$1"
     return 0
   fi
   ledger_write "$@"
@@ -655,6 +687,11 @@ ledger_write() {
     return 0
   fi
   LEDGER_TMP=""
+  # This record supersedes a void made before the lock was ours. One newer than
+  # the lock was made by a FAIL that waited on this very write, and it stays.
+  if [ -e "$LEDGER_DIR/void.$KEY" ] && ! [ "$LEDGER_DIR/void.$KEY" -nt "$LOCK_DIR" ]; then
+    rm -f -- "$LEDGER_DIR/void.$KEY" 2>/dev/null || true
+  fi
 }
 
 # shadow_append <result> <secs> <would_reuse> <command> — one line per shadow
@@ -751,6 +788,8 @@ prepare() {
       ledger_read 0
       LAST=$(jq -c --arg k "$KEY" '.entries[$k] // null' <<<"$LEDGER_JSON")
       if jq -e '. != null and .result == "PASS"' <<<"$LAST" >/dev/null 2>&1; then HIT=1; fi
+      # A FAIL the lock kept out voided the key: its older PASS is no hit.
+      if [ -e "$LEDGER_DIR/void.$KEY" ]; then HIT=0; fi
     else
       mode_reason="$LEDGER_NOTE"
     fi
