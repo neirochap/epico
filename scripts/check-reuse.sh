@@ -55,9 +55,11 @@
 # has the wrong shape or another version is renamed to
 # ledger.json.unreadable-<UTC stamp> (never replacing an earlier copy) and the
 # run goes on as if nothing were recorded. A failure to record or to set aside
-# warns on stderr and changes neither the verdict nor the exit code. A FAIL the
-# ledger lock kept out leaves void.<key> beside the ledger: that key is no hit
-# until its next recorded run, so its older PASS is never reused.
+# warns on stderr and changes neither the verdict nor the exit code. A non-PASS
+# that is not recorded — the ledger lock given up on, or the write under it
+# failed — leaves void.<key> beside the ledger: that key is no hit until its next
+# recorded run, so its older PASS is never reused, and the reason says so. A void
+# whose key the ledger no longer holds is removed by the next recorded run.
 #
 # `profile --detect` prints a proposed profile and writes nothing: one version
 # probe per toolchain whose manifest is in the project's top level AND whose binary
@@ -140,16 +142,16 @@ PROBE_TMP=""   # the file a probe's output is captured in
 RUN_LOG=""     # the file the checked command's output is captured in
 RUN_SID=""     # the file the command's session leader writes its pid to
 LOCK_DIR=""    # the ledger lock this run holds
+LOCK_TOKEN=""  # the owner token this run wrote in it
 cleanup() {
   # A signal to the runner must not leave the checked command running in its own
   # session until its timeout.
   if [ -n "$RUN_SID" ] && [ -s "$RUN_SID" ]; then
     kill -TERM -- "-$(cat -- "$RUN_SID" 2>/dev/null)" 2>/dev/null || true
   fi
-  if [ -n "$LOCK_DIR" ]; then
-    rm -f -- "$LOCK_DIR/owner" 2>/dev/null || true
-    rmdir -- "$LOCK_DIR" 2>/dev/null || true
-  fi
+  # LOCK_DIR is set only by ledger_lock, so ledger_unlock is defined by then; it
+  # releases only while the lock is still ours.
+  if [ -n "$LOCK_DIR" ]; then ledger_unlock; fi
   if [ -n "$IDX" ]; then rm -f -- "$IDX"; fi
   if [ -n "$PROBE_TMP" ]; then rm -f -- "$PROBE_TMP"; fi
   if [ -n "$RUN_LOG" ]; then rm -f -- "$RUN_LOG"; fi
@@ -502,6 +504,7 @@ LEDGER_FILE=""
 LEDGER_NOTE=""        # why there is no ledger directory
 LEDGER_JSON=""        # the ledger in force: a valid version-1 ledger, possibly empty
 LEDGER_BLOCKED=0      # 1 when an unreadable ledger could not be set aside
+LEDGER_RECORDED=0     # 1 once ledger_write has renamed the new ledger into place
 EMPTY_LEDGER='{"version":1,"entries":{}}'
 LEDGER_CAP=2000
 SHADOW_CAP=5000
@@ -569,8 +572,9 @@ ledger_read() {
 # macOS). The holder names itself in ledger.lock/owner, and the wait — about 5 s —
 # counts one holder: it restarts whenever the owner changes, so a queue of
 # writers handing the lock on never makes a newer FAIL give up. A lock older than
-# a minute belonged to a run that was killed, and is broken. Returns 1 when the
-# lock cannot be taken.
+# a minute belonged to a run that was killed, and is broken; one that cannot be
+# moved aside ends the wait, since waiting on it again would never end. Returns 1
+# when the lock cannot be taken.
 ledger_lock() {
   local lock="$LEDGER_DIR/ledger.lock" tries=0 absent=0 owner seen=""
 
@@ -585,7 +589,13 @@ ledger_lock() {
       tries=$((tries + 1))
       if [ "$tries" -ge 50 ]; then
         [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] || return 1
-        if mv -- "$lock" "$lock.stale.$$" 2>/dev/null; then rm -rf -- "$lock.stale.$$"; fi
+        if mv -- "$lock" "$lock.stale.$$" 2>/dev/null; then
+          rm -rf -- "$lock.stale.$$"
+        elif [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+          # Still there and still stale: the directory cannot be written. A
+          # waiter that lost the race to break it finds a fresh lock instead.
+          return 1
+        fi
         tries=0
         continue
       fi
@@ -601,22 +611,33 @@ ledger_lock() {
   LOCK_DIR="$lock"
   # Only has to differ from the previous holder's token; a waiter that cannot
   # read it sees an empty owner, which still changes when the next holder writes.
-  printf '%s %s\n' "$$" "$RANDOM" 2>/dev/null >"$lock/owner" || true
+  # A token that could not be written is no token: release then expects none.
+  LOCK_TOKEN="$$ $RANDOM"
+  printf '%s\n' "$LOCK_TOKEN" 2>/dev/null >"$lock/owner" || LOCK_TOKEN=""
 }
 
+# ledger_unlock — releases the lock only while its owner token is still this
+# run's: a run whose lock was broken as stale, and taken by another holder,
+# leaves that holder's lock alone. `cleanup` releases through it on a signal.
 ledger_unlock() {
+  local owner
   if [ -n "$LOCK_DIR" ]; then
-    rm -f -- "$LOCK_DIR/owner" 2>/dev/null || true
-    rmdir -- "$LOCK_DIR" 2>/dev/null || true
+    owner=$(cat -- "$LOCK_DIR/owner" 2>/dev/null || true)
+    if [ "$owner" = "$LOCK_TOKEN" ]; then
+      rm -f -- "$LOCK_DIR/owner" 2>/dev/null || true
+      rmdir -- "$LOCK_DIR" 2>/dev/null || true
+    fi
   fi
   LOCK_DIR=""
+  LOCK_TOKEN=""
 }
 
-# ledger_void <result> — a non-PASS the lock kept out must not leave an older
+# ledger_void <result> — a non-PASS that was not recorded must not leave an older
 # PASS for KEY reusable: void.<key> beside the ledger makes `prepare` report no
-# hit until the next locked write for KEY clears it. One empty file, written
-# without the lock, since the lock is exactly what could not be had. `true`, not
-# `:`: a failed redirection on a special builtin ends a POSIX-mode shell.
+# hit until the next locked write for KEY clears it. One empty file, written with
+# or without the lock, since the lock may be exactly what could not be had.
+# `true`, not `:`: a failed redirection on a special builtin ends a POSIX-mode
+# shell.
 ledger_void() {
   if [ "$1" = PASS ]; then return 0; fi
   if ! true 2>/dev/null >"$LEDGER_DIR/void.$KEY"; then
@@ -638,6 +659,7 @@ ledger_record() {
     return 0
   fi
   ledger_write "$@"
+  if [ "$LEDGER_RECORDED" -eq 0 ]; then ledger_void "$1"; fi
   ledger_unlock
 }
 
@@ -645,6 +667,7 @@ ledger_record() {
 ledger_write() {
   local result="$1" secs="$2" command_string="$3"
 
+  LEDGER_RECORDED=0
   ledger_read 1
   if [ "$LEDGER_BLOCKED" -eq 1 ]; then
     warn "the result was not recorded"
@@ -687,11 +710,33 @@ ledger_write() {
     return 0
   fi
   LEDGER_TMP=""
+  LEDGER_RECORDED=1
   # This record supersedes a void made before the lock was ours. One newer than
   # the lock was made by a FAIL that waited on this very write, and it stays.
   if [ -e "$LEDGER_DIR/void.$KEY" ] && ! [ "$LEDGER_DIR/void.$KEY" -nt "$LOCK_DIR" ]; then
     rm -f -- "$LEDGER_DIR/void.$KEY" 2>/dev/null || true
   fi
+  ledger_prune_voids
+}
+
+# ledger_prune_voids — with the lock held, after a write: a void whose key the
+# ledger no longer holds protects no PASS, so it goes, and there are never more
+# markers than entries. The keys are read once, and only when a marker exists.
+ledger_prune_voids() {
+  local v held="" read_keys=0
+  for v in "$LEDGER_DIR"/void.*; do
+    if [ ! -e "$v" ]; then continue; fi
+    if [ "$read_keys" -eq 0 ]; then
+      held=$(jq -r '.entries | keys[]' "$LEDGER_FILE" 2>/dev/null) || return 0
+      read_keys=1
+    fi
+    # A pattern match, not a here-string: one that could not be written (a full
+    # disk) would read as "not held" and delete the voids that protect a PASS.
+    case $'\n'"$held"$'\n' in
+      *$'\n'"${v##*/void.}"$'\n'*) ;;
+      *) rm -f -- "$v" 2>/dev/null || true ;;
+    esac
+  done
 }
 
 # shadow_append <result> <secs> <would_reuse> <command> — one line per shadow
@@ -760,7 +805,7 @@ REASON=""
 # built only where a result could be read or written. It only reads: an
 # unreadable ledger is set aside by `ledger_record`, under the lock.
 prepare() {
-  local command_string="$1" mode_reason=""
+  local command_string="$1" mode_reason="" void_reason=""
 
   RECORDABLE=0
   HIT=0
@@ -788,13 +833,16 @@ prepare() {
       ledger_read 0
       LAST=$(jq -c --arg k "$KEY" '.entries[$k] // null' <<<"$LEDGER_JSON")
       if jq -e '. != null and .result == "PASS"' <<<"$LAST" >/dev/null 2>&1; then HIT=1; fi
-      # A FAIL the lock kept out voided the key: its older PASS is no hit.
-      if [ -e "$LEDGER_DIR/void.$KEY" ]; then HIT=0; fi
+      # A dropped non-PASS voided the key: its older PASS is no hit, and says why.
+      if [ "$HIT" -eq 1 ] && [ -e "$LEDGER_DIR/void.$KEY" ]; then
+        HIT=0
+        void_reason="the key is void: a later non-PASS for this command was not recorded"
+      fi
     else
       mode_reason="$LEDGER_NOTE"
     fi
   fi
-  REASON=$(join_reasons "$FP_REASON" "$PROFILE_REASON" "$mode_reason" "$KEY_REASON")
+  REASON=$(join_reasons "$FP_REASON" "$PROFILE_REASON" "$mode_reason" "$KEY_REASON" "$void_reason")
 }
 
 # emit_run <decision> <would_reuse> <result> <exit> <evidence> <secs>

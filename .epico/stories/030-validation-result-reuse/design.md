@@ -169,7 +169,7 @@ The `fingerprint` key in the output is filled whenever it can be computed, in ev
   - **Release** removes `owner`, then the directory, and only while `owner` still holds this run's token: a run whose lock was broken as stale leaves the new holder's lock alone (R4.11). `cleanup` releases the same way on a signal.
   - **A lock that cannot be taken** means the result is not recorded, with a warning, and a non-PASS voids its key.
 - **Void markers (`void.<key>`)** keep a dropped non-PASS from leaving an older PASS reusable (R4.9):
-  - **Made** when a non-PASS is not recorded — the lock was given up on, or the write under the lock failed (`mktemp`, `jq` or `mv`). One empty file, written without the lock, with `true` and never `:` (a failed redirection on a special builtin ends a POSIX-mode shell). A marker that cannot be written is named in the warning.
+  - **Made** when a non-PASS is not recorded — the lock was given up on, or the write under the lock failed (`mktemp`, `jq` or `mv`). One empty file — written without the lock after a give-up, under it after a failed write — with `true` and never `:` (a failed redirection on a special builtin ends a POSIX-mode shell). A marker that cannot be written is named in the warning.
   - **Read** by `prepare`: a voided key is no hit, for `run`, `lookup` and shadow's `would_reuse` alike, and its `reason` says the key is void.
   - **Cleared** by the key's next locked write, unless the marker is newer than that write's lock — a FAIL that waited on this very write keeps its void.
   - **Bounded:** every locked write removes the markers whose key has no ledger entry (R4.12), so there are never more markers than entries.

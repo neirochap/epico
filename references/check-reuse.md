@@ -16,7 +16,7 @@ Two companions: `epico-check lookup -- <command>` is read-only and prints what `
 
 **The reuse key** is the command plus a fingerprint of the code (every tracked file and every untracked file git does not ignore, except `.epico/` and `.epic/`), the output of the profile's tool-version probes, the content of the profile's listed inputs (gitignored env or local-config files a check reads), and the profile file itself. Change any of them and the key changes.
 
-**Only a PASS is ever reused.** A FAIL is recorded and never reused. `--fresh` always runs and replaces the stored result — use it when a result is in doubt.
+**Only a PASS is ever reused.** A FAIL is recorded and never reused. `--fresh` always runs and replaces the stored result — use it when a result is in doubt. A FAIL that could not be recorded voids its key: the earlier PASS is not reused, and `reason` says the key is void, until the next recorded run of that command.
 
 ## Routed callers
 

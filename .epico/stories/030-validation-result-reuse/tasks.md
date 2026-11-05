@@ -470,11 +470,11 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
 
   - Commit: "fix(030): keep a newer FAIL under lock contention, and commit the nested repo with an identity"
 
-- [ ] 12 - Ledger lock hardening
+- [x] 12 - Ledger lock hardening
   - _Complexity: High | Tests: Integration | Risks: a void that is never cleared silently turns reuse off for a key; a release that checks the token wrongly leaves a lock behind for a minute | Dependencies: Task 11_
   - Objective: the four gaps the 11.2 technical review left open are closed — no dropped non-PASS leaves a PASS reusable, voids stay bounded, the wait always ends, and a run only ever releases its own lock
 
-  - [ ] 12.1 - A dropped non-PASS voids its key on every path, and a void is named and bounded
+  - [x] 12.1 - A dropped non-PASS voids its key on every path, and a void is named and bounded
     - Context:
       - Files: `scripts/check-reuse.sh` (`ledger_record`, `ledger_write`, `ledger_void`, `prepare`, `cmd_lookup`), `tests/check-reuse-lock.bats`, `tests/lib/reuse-fixture.sh`, `.draft/reports/tech-review-11.2.md` (W3, I1)
     - Objective: a non-PASS that a failed write under the lock drops leaves no reusable PASS, the reason says when a key is void, and markers never outnumber ledger entries
@@ -488,7 +488,7 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Requirements: R4.9, R4.12
     - Quality: Q1, Q2, Q3, Q8
 
-  - [ ] 12.2 - The lock wait always ends, and release removes only its own lock
+  - [x] 12.2 - The lock wait always ends, and release removes only its own lock
     - Context:
       - Files: `scripts/check-reuse.sh` (`ledger_lock`, `ledger_unlock`, `cleanup`), `tests/check-reuse-concurrency.bats`, `tests/check-reuse-lock.bats`, `.draft/reports/tech-review-11.2.md` (W1, I6)
     - Objective: a stale lock that cannot be broken ends the wait with a warning, and a run whose lock was broken as stale never removes the new holder's lock
@@ -501,7 +501,7 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Requirements: R4.10, R4.11
     - Quality: Q1, Q2, Q3, Q8
 
-  - [ ] 12.3 - The whole local check
+  - [x] 12.3 - The whole local check
     - Context:
       - Files: `RELEASING.md` (the local recipe)
     - Objective: the hardened lock joins a suite that passes as a whole
