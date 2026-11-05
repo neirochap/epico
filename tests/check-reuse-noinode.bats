@@ -3,9 +3,10 @@
 # (R4.10).
 #
 #   - A claim whose file cannot even be created (no inode left, a quota, a
-#     read-only mount) and is still absent after one more try is not another
-#     run's claim: the run gives up, warning "not recorded" and keeping the
-#     check's verdict, instead of waiting for a breaker that does not exist.
+#     read-only mount) is told apart from another run's claim by bash's own
+#     message, never by whether a file is there afterwards: the run gives up,
+#     warning "not recorded" and keeping the check's verdict, instead of waiting
+#     for a breaker that does not exist.
 #
 # The filesystem: a user and mount namespace (`unshare -rm`) mounts a tmpfs with
 # eight inodes over the ledger directory, a stale lock is planted, and the
