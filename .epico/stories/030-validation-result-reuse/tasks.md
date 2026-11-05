@@ -6,7 +6,7 @@ scale_reason: a new contract (ledger, profile and epico-check JSON) read by scri
 engineering: project
 requester: developer
 run-model: sonnet
-version: 6
+version: 7
 created: 2026-11-04
 last-refined: 2026-11-05
 history:
@@ -16,6 +16,7 @@ history:
   - v4: Refine after the second validation - uutils mkdir is not atomic, so the owner file, created with O_EXCL, decides who holds the ledger lock; Task 13
   - v5: Refine after the audit - R4.13 and R4.14 added; a stale lock is broken by one run at a time, under ledger.lock.break, and its waiters keep waiting; Task 14
   - v6: Refine after the revalidation - a claim file created but not written (a full filesystem) is removed and the run gives up; Task 15
+  - v7: Refine after the second revalidation - why a claim failed is read from bash's message, so a create the filesystem refuses (no inode, a quota) ends the wait; Task 16
 status: in-progress
 ---
 
@@ -595,6 +596,25 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Quality: Q1, Q2, Q3, Q8
 
   - Commit: "fix(030): a claim file created but not written is undone, so a full filesystem never hangs the ledger lock"
+
+- [x] 16 - A create the filesystem refuses
+  - _Complexity: Moderate | Tests: Integration | Risks: misreading another run's fleeting claim as a refusal, and giving up on a live queue | Dependencies: Task 15_
+  - Objective: a claim the filesystem refuses (no inode, a quota) ends the wait, and another run's claim is still waited on
+
+  - [x] 16.1 - Read why a claim failed from bash's message
+    - Context:
+      - Files: `scripts/check-reuse.sh` (`ledger_claim_file`, `ledger_lock`, `ledger_break`), `tests/check-reuse-fullfs.bats`, `tests/check-reuse-lock-claim.bats`, `.draft/validation-report.yaml` (the out-of-inodes FAILs)
+    - Objective: `ledger_claim_file` tells an existing claim, a vanished lock directory and a refusing filesystem apart, and the callers wait, retry or give up accordingly
+    - ToDo:
+      - **Test:** copy the authored test from `.draft/authored-tests/tests/check-reuse-noinode.bats`.
+      - **Classify the failure** in the C locale: "cannot overwrite existing file" → 1 (another run's claim); "No such file or directory" → 4 (the lock directory went away: try again); anything else → 3 (refused: give up).
+      - **Callers:** `ledger_lock` gives up on 2 or 3 and retries on 4; `ledger_break` ends the wait on 2 or more.
+    - Tests: Integration · `tests/check-reuse-noinode.bats` — a stale lock on a filesystem out of inodes ends the wait, warns, and keeps the verdict and exit code
+    - Validation: `bats tests/check-reuse-noinode.bats tests/check-reuse-fullfs.bats tests/check-reuse-lock-stale.bats tests/check-reuse-lock-release.bats tests/check-reuse-lock-claim.bats tests/check-reuse-concurrency.bats`
+    - Requirements: R4.10
+    - Quality: Q1, Q2, Q3, Q8
+
+  - Commit: "fix(030): read why a ledger lock claim failed, so a refusing filesystem ends the wait"
 
 ## Quality Gates
 

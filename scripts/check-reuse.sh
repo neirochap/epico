@@ -600,8 +600,9 @@ ledger_lock() {
       LOCK_DIR=""
       LOCK_TOKEN=""
       rmdir -- "$lock" 2>/dev/null || true
-      # Created but not written — a full filesystem: no lock can be had here.
-      if [ "$crc" -eq 2 ]; then return 1; fi
+      # Not written, or refused by the filesystem: no lock can be had here. A
+      # directory that went away under the claim (4) is only tried again.
+      if [ "$crc" -eq 2 ] || [ "$crc" -eq 3 ]; then return 1; fi
     fi
     if [ -d "$lock" ]; then
       absent=0
@@ -672,8 +673,8 @@ ledger_break() {
   ledger_claim_file "$brk" "$token" || crc=$?
   if [ "$crc" -ne 0 ]; then
     rc=2
-    if [ "$crc" -eq 2 ] || [ ! -w "${brk%/*}" ]; then
-      rc=1 # a full filesystem, or a directory that cannot be written: no break is possible
+    if [ "$crc" -ge 2 ] || [ ! -w "${brk%/*}" ]; then
+      rc=1 # not written, refused by the filesystem, or a directory that cannot be written
     else
       # Another breaker's file — or a killed breaker's, once it is older than a
       # minute. Its content is read before its age, and it is removed only while
@@ -684,8 +685,8 @@ ledger_break() {
         if [ "$(cat -- "$brk" 2>/dev/null || true)" = "$held" ]; then rm -f -- "$brk" 2>/dev/null || true; fi
         crc=0
         ledger_claim_file "$brk" "$token" || crc=$?
-        if [ "$crc" -eq 2 ]; then
-          rc=1 # created but not written: a full filesystem
+        if [ "$crc" -ge 2 ]; then
+          rc=1 # created but not written, or refused by the filesystem
         elif [ "$crc" -ne 0 ] && [ -n "$(find "$brk" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
           rc=1 # still there and still stale (not a file we can remove): no break is possible
         fi
@@ -728,19 +729,37 @@ ledger_break() {
 
 # ledger_claim_file <file> <token> — a claim in two steps: an O_EXCL create
 # (bash's noclobber), then the write of <token>. Returns 0 when claimed; 1 when
-# not created (it exists — another run's claim — or the directory refuses it);
-# 2 when created but not written (a full filesystem): the empty file is this
-# run's own, so it is removed again, never left to be read as another's claim.
+# it exists — another run's claim; 2 when created but not written (a full
+# filesystem): the empty file is this run's own, so it is removed again, never
+# left to be read as another's claim; 4 when the directory it goes in is gone (a
+# lock released between this run's mkdir and its claim); 3 when the create is
+# refused for any other reason (no inode, a quota, no permission, a read-only
+# mount, not a file). Why a
+# create failed is read from bash's own message, in the C locale, and never
+# guessed from whether a file is there afterwards — another run's claim can come
+# and go in between.
 ledger_claim_file() {
-  (
-    set -o noclobber
-    exec 3>"$1" || exit 1
-    if ! printf '%s\n' "$2" >&3; then
-      exec 3>&-
-      rm -f -- "$1"
-      exit 2
-    fi
-  ) 2>/dev/null
+  local out rc=0
+  out=$(
+    (
+      LC_ALL=C
+      set -o noclobber
+      exec 3>"$1" || exit 1
+      if ! printf '%s\n' "$2" >&3 2>/dev/null; then
+        exec 3>&-
+        rm -f -- "$1"
+        exit 2
+      fi
+    ) 2>&1
+  ) || rc=$?
+  if [ "$rc" -eq 1 ]; then
+    case $out in
+      *"cannot overwrite existing file"*) ;;
+      *"No such file or directory"*) rc=4 ;;
+      *) rc=3 ;;
+    esac
+  fi
+  return "$rc"
 }
 
 # ledger_break_drop <break file> <token> — removes it only while it holds <token>.
