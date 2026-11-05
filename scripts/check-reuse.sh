@@ -143,6 +143,8 @@ RUN_LOG=""     # the file the checked command's output is captured in
 RUN_SID=""     # the file the command's session leader writes its pid to
 LOCK_DIR=""    # the ledger lock this run holds
 LOCK_TOKEN=""  # the owner token this run wrote in it
+BREAK_FILE=""  # ledger.lock.break while this run is breaking a stale lock
+BREAK_TOKEN="" # the token this run wrote in it
 cleanup() {
   # A signal to the runner must not leave the checked command running in its own
   # session until its timeout.
@@ -152,6 +154,8 @@ cleanup() {
   # LOCK_DIR is set only by ledger_lock, so ledger_unlock is defined by then; it
   # releases only while the lock is still ours.
   if [ -n "$LOCK_DIR" ]; then ledger_unlock; fi
+  # BREAK_FILE is set only by ledger_break, so ledger_break_drop is defined by then.
+  if [ -n "$BREAK_FILE" ]; then ledger_break_drop "$BREAK_FILE" "$BREAK_TOKEN"; fi
   if [ -n "$IDX" ]; then rm -f -- "$IDX"; fi
   if [ -n "$PROBE_TMP" ]; then rm -f -- "$PROBE_TMP"; fi
   if [ -n "$RUN_LOG" ]; then rm -f -- "$RUN_LOG"; fi
@@ -573,11 +577,11 @@ ledger_read() {
 # `mkdir` lets racing callers all succeed — and the wait, about 5 s, counts one
 # holder: it restarts whenever the owner changes, so a queue of writers handing
 # the lock on never makes a newer FAIL give up. A lock older than a minute
-# belonged to a run that was killed, and is broken; one that cannot be moved
-# aside ends the wait, since waiting on it again would never end. Returns 1 when
-# the lock cannot be taken.
+# belonged to a run that was killed, and is broken, by one run at a time
+# (ledger_break); one that cannot be broken ends the wait, since waiting on it
+# again would never end. Returns 1 when the lock cannot be taken.
 ledger_lock() {
-  local lock="$LEDGER_DIR/ledger.lock" tries=0 absent=0 owner seen="" token
+  local lock="$LEDGER_DIR/ledger.lock" tries=0 absent=0 owner seen="" token rc
 
   while :; do
     if mkdir -- "$lock" 2>/dev/null; then
@@ -606,14 +610,28 @@ ledger_lock() {
       fi
       tries=$((tries + 1))
       if [ "$tries" -ge 50 ]; then
-        [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] || return 1
-        if mv -- "$lock" "$lock.stale.$$" 2>/dev/null; then
-          rm -rf -- "$lock.stale.$$"
-        elif [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
-          # Still there and still stale: the directory cannot be written. A
-          # waiter that lost the race to break it finds a fresh lock instead.
+        if [ -z "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+          # Not stale. A lock another run broke since the last read — gone, or
+          # taken by a new owner — is waited on afresh. Only one owner, or none,
+          # on the same directory for the whole budget means giving up.
+          owner=$(cat -- "$lock/owner" 2>/dev/null || true)
+          # An ownerless directory may be a claim in progress — a breaker's
+          # fresh lock between its mkdir and its owner file: look once more.
+          if [ -z "$owner" ] && [ -d "$lock" ]; then
+            sleep 0.1
+            owner=$(cat -- "$lock/owner" 2>/dev/null || true)
+          fi
+          if [ ! -d "$lock" ] || [ "$owner" != "$seen" ]; then
+            seen=$owner
+            tries=0
+            continue
+          fi
           return 1
         fi
+        rc=0
+        ledger_break "$lock" "$seen" || rc=$?
+        # 0 broken, 2 not ours to break now: either way, wait afresh.
+        if [ "$rc" -eq 1 ]; then return 1; fi
         tries=0
         continue
       fi
@@ -626,6 +644,91 @@ ledger_lock() {
     fi
     sleep 0.1
   done
+}
+
+# ledger_break <lock> <owner judged dead> — breaks a stale lock, one breaker at a
+# time. "Is it stale?" then "move it aside" are two steps, and two waiters that
+# both judged it stale would race: the second could move aside the fresh lock the
+# first just took. So the breaker first creates ledger.lock.break O_EXCL; with it
+# held nobody else moves the lock, and a lock holding an owner cannot be claimed,
+# so a lock still stale and still owned by the token judged dead is the dead
+# run's. A break file older than a minute belonged to a breaker that was killed;
+# since removing it races a fresh one, every removal of a break file checks the
+# token first, and a moved lock is checked to be the dead one. Returns 0 when
+# broken, 2 when it is not this run's to break now (another breaker, a new owner,
+# a lock already gone), 1 when it cannot be broken (the directory cannot be
+# written).
+ledger_break() {
+  local lock="$1" dead="$2" brk="$1.break" owner rc token moved held
+
+  token="$$ $RANDOM"
+  # Set before the claim: cleanup removes the break file only while it holds
+  # this token, so a signal right after the create still cleans up.
+  BREAK_FILE="$brk"
+  BREAK_TOKEN="$token"
+  if ! ledger_break_claim "$brk" "$token"; then
+    rc=2
+    if [ ! -w "${brk%/*}" ]; then
+      rc=1 # the directory cannot be written: nobody can break the lock
+    else
+      # Another breaker's file — or a killed breaker's, once it is older than a
+      # minute. Its content is read before its age, and it is removed only while
+      # it still holds that content (empty too: a breaker killed between its
+      # create and its write), so a fresh file that replaced it stays.
+      held=$(cat -- "$brk" 2>/dev/null || true)
+      if [ -n "$(find "$brk" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+        if [ "$(cat -- "$brk" 2>/dev/null || true)" = "$held" ]; then rm -f -- "$brk" 2>/dev/null || true; fi
+        if ! ledger_break_claim "$brk" "$token" &&
+          [ -n "$(find "$brk" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+          rc=1 # still there and still stale (not a file we can remove): no break is possible
+        fi
+      fi
+    fi
+    if ! [ "$(cat -- "$brk" 2>/dev/null || true)" = "$token" ]; then
+      BREAK_FILE=""
+      BREAK_TOKEN=""
+      return "$rc"
+    fi
+  fi
+  owner=$(cat -- "$lock/owner" 2>/dev/null || true)
+  if [ "$owner" != "$dead" ] || [ -z "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+    rc=2
+  elif mv -- "$lock" "$lock.stale.$$" 2>/dev/null; then
+    moved=$(cat -- "$lock.stale.$$/owner" 2>/dev/null || true)
+    if [ "$moved" = "$dead" ]; then
+      rm -rf -- "$lock.stale.$$"
+      rc=0
+    else
+      # A live lock was moved after the check: put it back while its place is
+      # free, or say that results recorded under it may be lost.
+      if [ -e "$lock" ] || ! mv -- "$lock.stale.$$" "$lock" 2>/dev/null; then
+        rm -rf -- "$lock.stale.$$"
+        warn "a live ledger lock was moved aside while breaking a stale one; a result recorded under it may be lost"
+      fi
+      rc=2
+    fi
+  elif [ -d "$lock" ] && [ "$(cat -- "$lock/owner" 2>/dev/null || true)" = "$dead" ] &&
+    [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+    rc=1 # still the dead lock, and it cannot be moved: the directory is not writable
+  else
+    rc=2
+  fi
+  ledger_break_drop "$brk" "$token"
+  BREAK_FILE=""
+  BREAK_TOKEN=""
+  return "$rc"
+}
+
+# ledger_break_claim <break file> <token> — creates it O_EXCL, holding the token.
+ledger_break_claim() {
+  (set -o noclobber && printf '%s\n' "$2" >"$1") 2>/dev/null
+}
+
+# ledger_break_drop <break file> <token> — removes it only while it holds <token>.
+ledger_break_drop() {
+  if [ -n "$2" ] && [ "$(cat -- "$1" 2>/dev/null || true)" = "$2" ]; then
+    rm -f -- "$1" 2>/dev/null || true
+  fi
 }
 
 # ledger_unlock — releases the lock only while its owner token is still this

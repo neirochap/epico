@@ -3,7 +3,7 @@ story: 030-validation-result-reuse
 type: feature
 scale: full
 engineering: project
-version: 4
+version: 5
 created: 2026-11-04
 last-refined: 2026-11-05
 history:
@@ -11,6 +11,7 @@ history:
   - v2: Refine after the run - R2.15, R2.16 and R4.8 added; the design describes the fingerprint, key, ledger lock and run as built; Task 10 adds regression guards for the review findings
   - v3: Refine after validation fixes round 1 - R4.8 reworded, R4.9 to R4.12 added; the design's Ledger describes the owner token and void markers; Task 12 hardens the ledger lock
   - v4: Refine after the second validation - uutils mkdir is not atomic, so the owner file, created with O_EXCL, decides who holds the ledger lock; Task 13
+  - v5: Refine after the audit - R4.13 and R4.14 added; a stale lock is broken by one run at a time, under ledger.lock.break, and its waiters keep waiting; Task 14
 status: in-progress
 ---
 
@@ -162,11 +163,11 @@ The `fingerprint` key in the output is filled whenever it can be computed, in ev
 
 - **Location:** `$(git rev-parse --path-format=absolute --git-common-dir)/epico/reuse/`.
 - **`ledger.json`:** `{"version": 1, "entries": {key: {command, result, fingerprint, at, secs}}}`, capped at **2000 entries**: the oldest `at` of the *other* entries is dropped first, and the entry just written never is, whatever its timestamp says.
-- **The directory also holds** `ledger.lock/` (a lock directory, below) with its `owner` token, `void.<key>` markers (below), temp files `ledger.XXXXXX` and `shadow.XXXXXX`, and set-aside copies. All of it is under the git directory, so none of it is part of the fingerprint.
+- **The directory also holds** `ledger.lock/` (a lock directory, below) with its `owner` token, `ledger.lock.break` while a stale lock is being broken, `void.<key>` markers (below), temp files `ledger.XXXXXX` and `shadow.XXXXXX`, and set-aside copies. All of it is under the git directory, so none of it is part of the fingerprint.
 - **The read-modify-write runs under a `mkdir` lock** (`ledger.lock`), because parallel runs share the ledger and a slow run could write back the ledger it read before a newer FAIL was recorded, putting a stale PASS back in play. No flock, which is absent on macOS.
   - **The owner file decides who holds it.** `mkdir` alone is not a lock everywhere: uutils' `mkdir` (0.10.0, the default coreutils on Ubuntu 26.04 and in the CI image) lets racing callers both succeed. So right after its `mkdir` a run creates `ledger.lock/owner` holding its token (pid and `$RANDOM`) under `set -o noclobber`, which bash opens with `O_EXCL` — one creator wins, on any coreutils and in bash 3.2. A run that loses that create removes the directory only if it is empty (`rmdir` refuses another holder's) and waits like any waiter; a token that cannot be created is no lock.
-  - **The wait counts one holder:** about 5 s (50 tries, 0.1 s apart), restarted whenever the owner token changes, so a queue of writers handing the lock on never makes a newer FAIL give up. A lock with one owner, or none, past the budget is given up on.
-  - **A stale lock** — older than a minute — belonged to a killed run and is broken. One that cannot be moved aside (the directory is not writable) is given up on, never waited on again (R4.10).
+  - **The wait counts one holder:** about 5 s (50 tries, 0.1 s apart), restarted whenever the owner token changes, so a queue of writers handing the lock on never makes a newer FAIL give up. A lock with one owner, or none, past the budget is given up on — but only after the owner is read once more: a lock another run broke and took in the meantime is a new holder, waited on afresh (R4.13).
+  - **A stale lock** — older than a minute — belonged to a killed run and is broken, by one run at a time (R4.14). The breaker first creates `ledger.lock.break` under `noclobber` (`O_EXCL`); with it held, nobody else moves the lock, and a lock holding an owner cannot be claimed, so the breaker checks once more that the lock is still stale and its owner is still the one it judged dead, and only then moves it aside and removes the break file. A run that cannot create the break file because another holds it waits as before; a break file older than a minute belonged to a breaker that was killed, and is removed. A stale lock that cannot be broken — the break file or the move cannot be made, the directory not writable — is given up on, never waited on again (R4.10).
   - **Release** removes `owner`, then the directory, and only while `owner` still holds this run's token: a run whose lock was broken as stale leaves the new holder's lock alone (R4.11). `cleanup` releases the same way on a signal.
   - **A lock that cannot be taken** means the result is not recorded, with a warning, and a non-PASS voids its key.
 - **Void markers (`void.<key>`)** keep a dropped non-PASS from leaving an older PASS reusable (R4.9):
@@ -308,7 +309,7 @@ sequenceDiagram
   - **Key changes** when an `inputs` file changes, when a probe's output changes, and when the profile changes.
   - **Decisions:** the decision table rows (off, shadow, on hit/miss, never, `--fresh`, FAIL never reused).
   - **Caps:** ledger cap 2000, shadow.log cap 5000.
-  - **The lock and the void** (`tests/check-reuse-lock.bats`, `tests/check-reuse-void.bats`, `tests/check-reuse-lock-release.bats`, `tests/check-reuse-lock-claim.bats`): with a `mkdir` that lets every racer succeed, one run holds the lock at a time; a queue of holders never makes a FAIL give up; a dropped non-PASS voids its key on every path; a void is cleared, named and bounded; a stale lock that cannot be moved ends the wait; release leaves another holder's lock alone.
+  - **The lock and the void** (`tests/check-reuse-lock.bats`, `tests/check-reuse-void.bats`, `tests/check-reuse-lock-release.bats`, `tests/check-reuse-lock-claim.bats`, `tests/check-reuse-lock-stale.bats`): with a `mkdir` that lets every racer succeed, one run holds the lock at a time; several waiters on a stale lock all record, one breaks it, and a breaker never moves a lock another run just took; a queue of holders never makes a FAIL give up; a dropped non-PASS voids its key on every path; a void is cleared, named and bounded; a stale lock that cannot be moved ends the wait; release leaves another holder's lock alone.
   - **Contract:** usage errors exit 2 with no JSON; JSON contract keys.
   - **`profile --detect`** on fixture manifests.
   - **`stats`** counts.
@@ -370,6 +371,7 @@ sequenceDiagram
 - **GOTCHA: timing** — `date +%s%N` is unsupported on macOS. **Fix:** measure with bash `SECONDS` and stamp with `date -u +%Y-%m-%dT%H:%M:%SZ`.
 - **GOTCHA: concurrent writers** — parallel Executors in worktrees write the same ledger. flock is util-linux, outside the constitution's bash+jq+git, and absent on macOS. **Fix:** a `mkdir` lock around the read-modify-write, and a temp file in the same directory then `mv`, so the file is never torn. Without the lock a slow writer can put an older PASS back over a newer FAIL; that is a stale PASS reused in mode `on`, not a harmless lost update. A wait that counts tries whoever holds the lock gives up on a queue of live writers, so the wait counts one holder, and a result that is still not recorded voids its key.
 - **GOTCHA: `mkdir` is not atomic under uutils** — the CI mirror (Ubuntu 26.04, uutils coreutils 0.10.0) lost ledger entries with no warning under 7 to 12 parallel runs while the host (GNU) passed. Measured inside the image: 20 racing `mkdir -- <dir>`, 200 rounds → 90 rounds with more than one winner; `gnumkdir` → 0. **Fix:** the owner file, created with `O_EXCL` through bash's `noclobber`, decides who holds the lock; `mkdir` only makes the directory it sits in.
+- **GOTCHA: breaking a stale lock is two steps** — "is it stale?" then "move it aside". Two waiters that both judged it stale race: the second can move aside the fresh lock the first just took, and two runs then hold it (seen 1 in 8 rounds with 6 waiters), while a waiter that finds the lock re-taken at its last check gives up (3 in 5 rounds). **Fix:** one breaker at a time under `ledger.lock.break`, re-checking stale and owner under it; and the owner read once more before any give-up.
 - **GOTCHA: moving validate-run's run semantics** — they must move intact (`setsid --fork --wait`, `timeout`, process-group kill, output to a file, not a pipe). validate-run.sh's own comment records a `cargo run &` holding a pipe open until the timeout (300 s lost).
 - **GOTCHA: profile format** — YAML would need yq, which the constitution does not allow. **Fix:** the profile is JSON.
 - **GOTCHA: ambiguous gate prefix** — two `Q5` lines are closed by `gate:<prefix>`. **Fix:** the prefixes must differ before the colon (`(api)`, `(checkout)`), or `close-subtask.sh` refuses the ambiguous match.

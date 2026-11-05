@@ -6,7 +6,7 @@ scale_reason: a new contract (ledger, profile and epico-check JSON) read by scri
 engineering: project
 requester: developer
 run-model: sonnet
-version: 4
+version: 5
 created: 2026-11-04
 last-refined: 2026-11-05
 history:
@@ -14,6 +14,7 @@ history:
   - v2: Refine after the run - R2.15, R2.16 and R4.8 added; the design describes the fingerprint, key, ledger lock and run as built; Task 10 adds regression guards for the review findings
   - v3: Refine after validation fixes round 1 - R4.8 reworded, R4.9 to R4.12 added; the design's Ledger describes the owner token and void markers; Task 12 hardens the ledger lock
   - v4: Refine after the second validation - uutils mkdir is not atomic, so the owner file, created with O_EXCL, decides who holds the ledger lock; Task 13
+  - v5: Refine after the audit - R4.13 and R4.14 added; a stale lock is broken by one run at a time, under ledger.lock.break, and its waiters keep waiting; Task 14
 status: in-progress
 ---
 
@@ -544,6 +545,36 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Quality: Q1, Q3, Q9
 
   - Commit: "fix(030): the owner file, created with O_EXCL, decides who holds the ledger lock"
+
+- [x] 14 - Breaking a stale lock
+  - _Complexity: High | Tests: Integration | Risks: a break file left by a killed breaker must not block every later break; a waiter must never wait forever on a lock nobody can break | Dependencies: Task 13_
+  - Objective: when a run was killed holding the ledger lock, every waiter still records its result, one run breaks the lock, and no break ever moves a lock a live run holds
+
+  - [x] 14.1 - One breaker at a time, and no waiter gives up on a re-taken lock
+    - Context:
+      - Files: `scripts/check-reuse.sh` (`ledger_lock`), `tests/check-reuse-concurrency.bats`, `tests/check-reuse-lock-release.bats`, `tests/check-reuse-lock-claim.bats`, `tests/lib/reuse-fixture.sh`, `.draft/reports/tech-review-13.1.md` (B, C), `.draft/audit-report.yaml` (the R4.8 gap)
+    - Objective: several waiters on a stale lock all record, exactly one breaks it, and a breaker only moves the lock it judged dead
+    - ToDo:
+      - **Test:** copy the authored test from `.draft/authored-tests/tests/check-reuse-lock-stale.bats`.
+      - **Read the owner before giving up:** at the not-stale check, a lock whose owner changed since the last read is a new holder — restart the count instead of returning 1.
+      - **Break under `ledger.lock.break`:** create it under `noclobber`; with it held, re-check that the lock is still stale and its owner still the one judged dead, then move it aside and remove the break file. A break file held by another run means wait; one older than a minute is removed; one that cannot be created in a directory that cannot be written ends the wait (R4.10 keeps holding).
+    - Tests: Integration · `tests/check-reuse-lock-stale.bats` — six runs waiting on a stale lock all record their results with no "not recorded" warning; a breaker held between its stale check and its move while another run breaks the lock and takes it leaves that run's lock and owner in place and loses no result; a break file older than a minute left by a killed breaker does not stop the stale lock from being broken and the result recorded; a stale lock in a directory that cannot be written still ends the wait within 15 s
+    - Validation: `bats tests/check-reuse-lock-stale.bats tests/check-reuse-lock-release.bats tests/check-reuse-lock-claim.bats tests/check-reuse-concurrency.bats`
+    - Requirements: R4.8, R4.10, R4.13, R4.14
+    - Quality: Q1, Q2, Q3, Q8
+
+  - [x] 14.2 - The whole local check and the CI mirror
+    - Context:
+      - Files: `RELEASING.md` (the local recipe), `.github/workflows/shell.yml` (the `bats` job)
+    - Objective: the suite passes on this machine and on the CI image after the stale-break change
+    - ToDo:
+      - **Run** `shellcheck scripts/*.sh bin/*`, then the CI mirror's `bats` job, as a normal user.
+      - **Record each result.** Fix a red in the owning sub-task's files, never by weakening a check.
+    - Tests: None — verification only; the CI mirror runs the whole suite on Ubuntu 26.04
+    - Validation: `shellcheck scripts/*.sh bin/* && act -P ubuntu-26.04=epico-act:26.04 --pull=false -j bats`
+    - Quality: Q1, Q3, Q9
+
+  - Commit: "fix(030): break a stale ledger lock one run at a time, and keep its waiters waiting"
 
 ## Quality Gates
 

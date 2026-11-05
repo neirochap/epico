@@ -3,7 +3,7 @@ story: 030-validation-result-reuse
 type: feature
 scale: full
 engineering: project
-version: 4
+version: 5
 created: 2026-11-04
 last-refined: 2026-11-05
 history:
@@ -11,6 +11,7 @@ history:
   - v2: Refine after the run - R2.15, R2.16 and R4.8 added; the design describes the fingerprint, key, ledger lock and run as built; Task 10 adds regression guards for the review findings
   - v3: Refine after validation fixes round 1 - R4.8 reworded, R4.9 to R4.12 added; the design's Ledger describes the owner token and void markers; Task 12 hardens the ledger lock
   - v4: Refine after the second validation - uutils mkdir is not atomic, so the owner file, created with O_EXCL, decides who holds the ledger lock; Task 13
+  - v5: Refine after the audit - R4.13 and R4.14 added; a stale lock is broken by one run at a time, under ledger.lock.break, and its waiters keep waiting; Task 14
 status: in-progress
 ---
 
@@ -86,6 +87,8 @@ A story's checks run again and again on code that has not changed. A validation 
 - R4.10: IF a stale ledger lock cannot be broken THEN THE SYSTEM SHALL stop waiting, warn, and return the check's own verdict and exit code
 - R4.11: WHEN a run releases the ledger lock THE SYSTEM SHALL remove it only while the lock's owner token is still the run's own
 - R4.12: WHEN a result is recorded THE SYSTEM SHALL remove every void marker whose key has no ledger entry
+- R4.13: WHEN another run breaks a stale ledger lock that a run is waiting on THE SYSTEM SHALL keep that run waiting for the new holder instead of giving up
+- R4.14: WHEN several runs judge the same ledger lock stale THE SYSTEM SHALL let one of them break it, and only while its owner is still the one judged stale
 
 ### R5. Per-project profile
 
