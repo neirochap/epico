@@ -3,7 +3,7 @@ story: 030-validation-result-reuse
 type: feature
 scale: full
 engineering: project
-version: 5
+version: 6
 created: 2026-11-04
 last-refined: 2026-11-05
 history:
@@ -12,6 +12,7 @@ history:
   - v3: Refine after validation fixes round 1 - R4.8 reworded, R4.9 to R4.12 added; the design's Ledger describes the owner token and void markers; Task 12 hardens the ledger lock
   - v4: Refine after the second validation - uutils mkdir is not atomic, so the owner file, created with O_EXCL, decides who holds the ledger lock; Task 13
   - v5: Refine after the audit - R4.13 and R4.14 added; a stale lock is broken by one run at a time, under ledger.lock.break, and its waiters keep waiting; Task 14
+  - v6: Refine after the revalidation - a claim file created but not written (a full filesystem) is removed and the run gives up; Task 15
 status: in-progress
 ---
 

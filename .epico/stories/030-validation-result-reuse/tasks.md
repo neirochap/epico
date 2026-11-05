@@ -6,7 +6,7 @@ scale_reason: a new contract (ledger, profile and epico-check JSON) read by scri
 engineering: project
 requester: developer
 run-model: sonnet
-version: 5
+version: 6
 created: 2026-11-04
 last-refined: 2026-11-05
 history:
@@ -15,6 +15,7 @@ history:
   - v3: Refine after validation fixes round 1 - R4.8 reworded, R4.9 to R4.12 added; the design's Ledger describes the owner token and void markers; Task 12 hardens the ledger lock
   - v4: Refine after the second validation - uutils mkdir is not atomic, so the owner file, created with O_EXCL, decides who holds the ledger lock; Task 13
   - v5: Refine after the audit - R4.13 and R4.14 added; a stale lock is broken by one run at a time, under ledger.lock.break, and its waiters keep waiting; Task 14
+  - v6: Refine after the revalidation - a claim file created but not written (a full filesystem) is removed and the run gives up; Task 15
 status: in-progress
 ---
 
@@ -575,6 +576,25 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
     - Quality: Q1, Q3, Q9
 
   - Commit: "fix(030): break a stale ledger lock one run at a time, and keep its waiters waiting"
+
+- [x] 15 - A full filesystem under the ledger lock
+  - _Complexity: Moderate | Tests: Integration | Risks: removing an empty file that is another run's claim in progress | Dependencies: Task 14_
+  - Objective: a claim whose file is created but cannot be written is undone and given up on, so a full filesystem never makes a run wait for ever
+
+  - [x] 15.1 - Create, then write: an unwritten claim is this run's own
+    - Context:
+      - Files: `scripts/check-reuse.sh` (`ledger_lock`, `ledger_break`, `ledger_break_claim`), `tests/check-reuse-lock-stale.bats`, `tests/check-reuse-lock-claim.bats`, `.draft/validation-report.yaml` (the full-filesystem FAILs)
+    - Objective: the owner and break files are claimed by an `O_EXCL` open and a separate write; a failed write removes the file and ends the wait
+    - ToDo:
+      - **Test:** copy the authored test from `.draft/authored-tests/tests/check-reuse-fullfs.bats`.
+      - **One claim helper** for both files: open `O_EXCL` under `noclobber` (fails → another run's claim), then write the token (fails → remove the file, report "cannot").
+      - **Give up on "cannot"** in `ledger_lock` (owner) and `ledger_break` (break file): warn "not recorded", keep the verdict.
+    - Tests: Integration · `tests/check-reuse-fullfs.bats` — a stale lock on a full filesystem ends the wait, warns and keeps the verdict and exit code; a claim on a full filesystem gives up at once and leaves no lock or owner file behind
+    - Validation: `bats tests/check-reuse-fullfs.bats tests/check-reuse-lock-stale.bats tests/check-reuse-lock-release.bats tests/check-reuse-lock-claim.bats tests/check-reuse-concurrency.bats`
+    - Requirements: R4.10
+    - Quality: Q1, Q2, Q3, Q8
+
+  - Commit: "fix(030): a claim file created but not written is undone, so a full filesystem never hangs the ledger lock"
 
 ## Quality Gates
 

@@ -3,7 +3,7 @@ story: 030-validation-result-reuse
 type: feature
 scale: full
 engineering: project
-version: 5
+version: 6
 created: 2026-11-04
 last-refined: 2026-11-05
 history:
@@ -12,6 +12,7 @@ history:
   - v3: Refine after validation fixes round 1 - R4.8 reworded, R4.9 to R4.12 added; the design's Ledger describes the owner token and void markers; Task 12 hardens the ledger lock
   - v4: Refine after the second validation - uutils mkdir is not atomic, so the owner file, created with O_EXCL, decides who holds the ledger lock; Task 13
   - v5: Refine after the audit - R4.13 and R4.14 added; a stale lock is broken by one run at a time, under ledger.lock.break, and its waiters keep waiting; Task 14
+  - v6: Refine after the revalidation - a claim file created but not written (a full filesystem) is removed and the run gives up; Task 15
 status: in-progress
 ---
 
@@ -168,6 +169,7 @@ The `fingerprint` key in the output is filled whenever it can be computed, in ev
   - **The owner file decides who holds it.** `mkdir` alone is not a lock everywhere: uutils' `mkdir` (0.10.0, the default coreutils on Ubuntu 26.04 and in the CI image) lets racing callers both succeed. So right after its `mkdir` a run creates `ledger.lock/owner` holding its token (pid and `$RANDOM`) under `set -o noclobber`, which bash opens with `O_EXCL` — one creator wins, on any coreutils and in bash 3.2. A run that loses that create removes the directory only if it is empty (`rmdir` refuses another holder's) and waits like any waiter; a token that cannot be created is no lock.
   - **The wait counts one holder:** about 5 s (50 tries, 0.1 s apart), restarted whenever the owner token changes, so a queue of writers handing the lock on never makes a newer FAIL give up. A lock with one owner, or none, past the budget is given up on — but only after the owner is read once more: a lock another run broke and took in the meantime is a new holder, waited on afresh (R4.13).
   - **A stale lock** — older than a minute — belonged to a killed run and is broken, by one run at a time (R4.14). The breaker first creates `ledger.lock.break` under `noclobber` (`O_EXCL`); with it held, nobody else moves the lock, and a lock holding an owner cannot be claimed, so the breaker checks once more that the lock is still stale and its owner is still the one it judged dead, and only then moves it aside and removes the break file. A run that cannot create the break file because another holds it waits as before; a break file older than a minute belonged to a breaker that was killed, and is removed. A stale lock that cannot be broken — the break file or the move cannot be made, the directory not writable — is given up on, never waited on again (R4.10).
+  - **A claim is create, then write.** The owner file and the break file are each opened `O_EXCL` first and written second: a create that fails is another run's claim, while a create that succeeds and a write that fails (a full filesystem) is this run's own empty file — it is removed again and the run gives up at once, warning "not recorded" and keeping the check's verdict (R4.10). An empty file is never read as another run's claim it must wait on.
   - **Release** removes `owner`, then the directory, and only while `owner` still holds this run's token: a run whose lock was broken as stale leaves the new holder's lock alone (R4.11). `cleanup` releases the same way on a signal.
   - **A lock that cannot be taken** means the result is not recorded, with a warning, and a non-PASS voids its key.
 - **Void markers (`void.<key>`)** keep a dropped non-PASS from leaving an older PASS reusable (R4.9):

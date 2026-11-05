@@ -581,7 +581,7 @@ ledger_read() {
 # (ledger_break); one that cannot be broken ends the wait, since waiting on it
 # again would never end. Returns 1 when the lock cannot be taken.
 ledger_lock() {
-  local lock="$LEDGER_DIR/ledger.lock" tries=0 absent=0 owner seen="" token rc
+  local lock="$LEDGER_DIR/ledger.lock" tries=0 absent=0 owner seen="" token rc crc
 
   while :; do
     if mkdir -- "$lock" 2>/dev/null; then
@@ -594,12 +594,14 @@ ledger_lock() {
       # that is ours: ledger_unlock compares it with the token, never another's.
       LOCK_DIR="$lock"
       LOCK_TOKEN="$token"
-      if (set -o noclobber && printf '%s\n' "$token" >"$lock/owner") 2>/dev/null; then
-        return 0
-      fi
+      crc=0
+      ledger_claim_file "$lock/owner" "$token" || crc=$?
+      if [ "$crc" -eq 0 ]; then return 0; fi
       LOCK_DIR=""
       LOCK_TOKEN=""
       rmdir -- "$lock" 2>/dev/null || true
+      # Created but not written — a full filesystem: no lock can be had here.
+      if [ "$crc" -eq 2 ]; then return 1; fi
     fi
     if [ -d "$lock" ]; then
       absent=0
@@ -659,17 +661,19 @@ ledger_lock() {
 # a lock already gone), 1 when it cannot be broken (the directory cannot be
 # written).
 ledger_break() {
-  local lock="$1" dead="$2" brk="$1.break" owner rc token moved held
+  local lock="$1" dead="$2" brk="$1.break" owner rc token moved held crc
 
   token="$$ $RANDOM"
   # Set before the claim: cleanup removes the break file only while it holds
   # this token, so a signal right after the create still cleans up.
   BREAK_FILE="$brk"
   BREAK_TOKEN="$token"
-  if ! ledger_break_claim "$brk" "$token"; then
+  crc=0
+  ledger_claim_file "$brk" "$token" || crc=$?
+  if [ "$crc" -ne 0 ]; then
     rc=2
-    if [ ! -w "${brk%/*}" ]; then
-      rc=1 # the directory cannot be written: nobody can break the lock
+    if [ "$crc" -eq 2 ] || [ ! -w "${brk%/*}" ]; then
+      rc=1 # a full filesystem, or a directory that cannot be written: no break is possible
     else
       # Another breaker's file — or a killed breaker's, once it is older than a
       # minute. Its content is read before its age, and it is removed only while
@@ -678,8 +682,11 @@ ledger_break() {
       held=$(cat -- "$brk" 2>/dev/null || true)
       if [ -n "$(find "$brk" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
         if [ "$(cat -- "$brk" 2>/dev/null || true)" = "$held" ]; then rm -f -- "$brk" 2>/dev/null || true; fi
-        if ! ledger_break_claim "$brk" "$token" &&
-          [ -n "$(find "$brk" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+        crc=0
+        ledger_claim_file "$brk" "$token" || crc=$?
+        if [ "$crc" -eq 2 ]; then
+          rc=1 # created but not written: a full filesystem
+        elif [ "$crc" -ne 0 ] && [ -n "$(find "$brk" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
           rc=1 # still there and still stale (not a file we can remove): no break is possible
         fi
       fi
@@ -719,9 +726,21 @@ ledger_break() {
   return "$rc"
 }
 
-# ledger_break_claim <break file> <token> — creates it O_EXCL, holding the token.
-ledger_break_claim() {
-  (set -o noclobber && printf '%s\n' "$2" >"$1") 2>/dev/null
+# ledger_claim_file <file> <token> — a claim in two steps: an O_EXCL create
+# (bash's noclobber), then the write of <token>. Returns 0 when claimed; 1 when
+# not created (it exists — another run's claim — or the directory refuses it);
+# 2 when created but not written (a full filesystem): the empty file is this
+# run's own, so it is removed again, never left to be read as another's claim.
+ledger_claim_file() {
+  (
+    set -o noclobber
+    exec 3>"$1" || exit 1
+    if ! printf '%s\n' "$2" >&3; then
+      exec 3>&-
+      rm -f -- "$1"
+      exit 2
+    fi
+  ) 2>/dev/null
 }
 
 # ledger_break_drop <break file> <token> — removes it only while it holds <token>.
