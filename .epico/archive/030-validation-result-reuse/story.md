@@ -14,7 +14,7 @@ history:
   - v5: Refine after the audit - R4.13 and R4.14 added; a stale lock is broken by one run at a time, under ledger.lock.break, and its waiters keep waiting; Task 14
   - v6: Refine after the revalidation - a claim file created but not written (a full filesystem) is removed and the run gives up; Task 15
   - v7: Refine after the second revalidation - why a claim failed is read from bash's message, so a create the filesystem refuses (no inode, a quota) ends the wait; Task 16
-status: in-progress
+status: archived
 ---
 
 # Story - Validation Result Reuse

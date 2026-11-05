@@ -506,3 +506,21 @@ archived:
       copies_removed: 0
     validated_sha: "6b36a5e7a703e5134dbee7fd4936211e79827d70"
     overrides_used: []
+  - story: "030-validation-result-reuse"
+    number: "030"
+    slug: "validation-result-reuse"
+    type: "feature"
+    scale: "full"
+    status: "validated"
+    tasks_total: 67
+    tasks_closed: 66
+    tasks_deferred: 1
+    tasks_open: 0
+    deferred_items:
+      - "Q10 — Pre-commit hook: `pre-commit run --all-files` passes (n-a: pre-commit is not installed on this machine; its two repo-local hooks were run directly — gitleaks exit 0, shellcheck -x exit 0)"
+    archived_at: "2026-11-05T19:56:13-03:00"
+    pruned:
+      logs_kb: 0
+      copies_removed: 0
+    validated_sha: "638f1c4868fedfd30a6bc0cd8dc7e3a8dc54f09f"
+    overrides_used: []

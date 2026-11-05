@@ -17,7 +17,7 @@ history:
   - v5: Refine after the audit - R4.13 and R4.14 added; a stale lock is broken by one run at a time, under ledger.lock.break, and its waiters keep waiting; Task 14
   - v6: Refine after the revalidation - a claim file created but not written (a full filesystem) is removed and the run gives up; Task 15
   - v7: Refine after the second revalidation - why a claim failed is read from bash's message, so a create the filesystem refuses (no inode, a quota) ends the wait; Task 16
-status: in-progress
+status: archived
 ---
 
 # Implementation Plan - Validation Result Reuse
@@ -618,7 +618,7 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
 
 ## Quality Gates
 
-- [ ] All acceptance criteria validated
+- [x] All acceptance criteria validated
 - [x] All task validations pass
 - [x] All tests written and passing
 - [x] Code integrated (no orphaned implementations)
@@ -635,6 +635,6 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
 - [x] Q9 — CI mirror (bats): `act -P ubuntu-26.04=epico-act:26.04 --pull=false -j bats` passes from a clean clone
 - [x] Q9 — CI mirror (validate-examples): `act -P ubuntu-26.04=epico-act:26.04 --pull=false -j validate-examples` passes from a clean clone
 - [x] Q9 — CI mirror (plugin-validate): `act -P ubuntu-26.04=epico-act:26.04 --pull=false -j plugin-validate` passes from a clean clone
-- [ ] Q10 — Pre-commit hook: `pre-commit run --all-files` passes
+- [~] Q10 — Pre-commit hook: `pre-commit run --all-files` passes (n-a: pre-commit is not installed on this machine; its two repo-local hooks were run directly — gitleaks exit 0, shellcheck -x exit 0)
 - [x] Q11 — Format version: the ledger and the profile carry `version: 1`; a file of another version is set aside (ledger) or read as absent (profile), never misread
 - [x] Q12 — Plugin schema: `for p in .claude-plugin/plugin.json .claude-plugin/marketplace.json skills agents; do claude plugin validate --strict "$p" || exit 1; done` passes
