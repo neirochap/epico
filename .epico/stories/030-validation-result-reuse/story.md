@@ -3,12 +3,13 @@ story: 030-validation-result-reuse
 type: feature
 scale: full
 engineering: project
-version: 2
+version: 3
 created: 2026-11-04
-last-refined: 2026-11-04
+last-refined: 2026-11-05
 history:
   - v1: Initial story
   - v2: Refine after the run - R2.15, R2.16 and R4.8 added; the design describes the fingerprint, key, ledger lock and run as built; Task 10 adds regression guards for the review findings
+  - v3: Refine after validation fixes round 1 - R4.8 reworded, R4.9 to R4.12 added; the design's Ledger describes the owner token and void markers; Task 12 hardens the ledger lock
 status: in-progress
 ---
 
@@ -79,7 +80,11 @@ A story's checks run again and again on code that has not changed. A validation 
 - R4.4: IF the reuse profile is not valid JSON or carries an unknown format version THEN THE SYSTEM SHALL apply the shadow defaults, warn, and leave the profile file unmodified
 - R4.5: IF recording a result fails THEN THE SYSTEM SHALL still return the check's own verdict and exit code and warn that the result was not recorded
 - R4.6: IF the reuse guard fails while deciding THEN THE SYSTEM SHALL let the tool call through
-- R4.8: WHEN two checks record a result at once THE SYSTEM SHALL keep both, and never let an older result replace a newer one for the same key
+- R4.8: WHEN several checks record a result at once THE SYSTEM SHALL keep each one, however many queue for the ledger lock, and never let an older result replace a newer one for the same key
+- R4.9: IF a non-PASS result cannot be recorded THEN THE SYSTEM SHALL not reuse the earlier PASS for the same key until a later run of that key is recorded
+- R4.10: IF a stale ledger lock cannot be broken THEN THE SYSTEM SHALL stop waiting, warn, and return the check's own verdict and exit code
+- R4.11: WHEN a run releases the ledger lock THE SYSTEM SHALL remove it only while the lock's owner token is still the run's own
+- R4.12: WHEN a result is recorded THE SYSTEM SHALL remove every void marker whose key has no ledger entry
 
 ### R5. Per-project profile
 

@@ -6,12 +6,13 @@ scale_reason: a new contract (ledger, profile and epico-check JSON) read by scri
 engineering: project
 requester: developer
 run-model: sonnet
-version: 2
+version: 3
 created: 2026-11-04
-last-refined: 2026-11-04
+last-refined: 2026-11-05
 history:
   - v1: Initial story
   - v2: Refine after the run - R2.15, R2.16 and R4.8 added; the design describes the fingerprint, key, ledger lock and run as built; Task 10 adds regression guards for the review findings
+  - v3: Refine after validation fixes round 1 - R4.8 reworded, R4.9 to R4.12 added; the design's Ledger describes the owner token and void markers; Task 12 hardens the ledger lock
 status: in-progress
 ---
 
@@ -464,10 +465,54 @@ Every Unit and Integration test is pre-authored under `.draft/authored-tests/` a
       - **Design:** record the lock change with `epico-deviation`, with a follow-up to refine `design.md` (Ledger) and R4.8.
     - Tests: Integration · `tests/check-reuse-lock.bats` — a lock that changes hands for longer than the wait does not make a FAIL's record give up, and the ledger holds the FAIL; a lock held by one owner past the wait leaves the FAIL unrecorded, yet the key's earlier PASS is not reused in mode `on` (decision `ran`); the next recorded run of that key clears the void, and a PASS recorded after it is reused again; release leaves no `ledger.lock` behind
     - Validation: `bats tests/check-reuse-lock.bats tests/check-reuse-concurrency.bats`
-    - Requirements: R4.8
+    - Requirements: R4.8, R4.9
     - Quality: Q1, Q2, Q3, Q8
 
   - Commit: "fix(030): keep a newer FAIL under lock contention, and commit the nested repo with an identity"
+
+- [ ] 12 - Ledger lock hardening
+  - _Complexity: High | Tests: Integration | Risks: a void that is never cleared silently turns reuse off for a key; a release that checks the token wrongly leaves a lock behind for a minute | Dependencies: Task 11_
+  - Objective: the four gaps the 11.2 technical review left open are closed — no dropped non-PASS leaves a PASS reusable, voids stay bounded, the wait always ends, and a run only ever releases its own lock
+
+  - [ ] 12.1 - A dropped non-PASS voids its key on every path, and a void is named and bounded
+    - Context:
+      - Files: `scripts/check-reuse.sh` (`ledger_record`, `ledger_write`, `ledger_void`, `prepare`, `cmd_lookup`), `tests/check-reuse-lock.bats`, `tests/lib/reuse-fixture.sh`, `.draft/reports/tech-review-11.2.md` (W3, I1)
+    - Objective: a non-PASS that a failed write under the lock drops leaves no reusable PASS, the reason says when a key is void, and markers never outnumber ledger entries
+    - ToDo:
+      - **Test:** copy the authored test from `.draft/authored-tests/tests/check-reuse-void.bats`.
+      - **Every dropped non-PASS voids:** the `mktemp`, `jq` and `mv` failure paths of `ledger_write` void the key, as the lock give-up does.
+      - **The reason names the void:** `run` and `lookup` say the key is void when a void forced the miss.
+      - **Bounded:** each locked write removes the `void.*` markers whose key has no entry in the ledger it wrote.
+    - Tests: Integration · `tests/check-reuse-void.bats` — a FAIL whose rewrite fails under the lock leaves the earlier PASS unreused in mode `on`; `lookup` on a voided key reports `would_reuse` false and a reason naming the void; a void whose key the ledger no longer holds is removed by the next recorded run of any key; a void whose key is in the ledger survives another key's run
+    - Validation: `bats tests/check-reuse-void.bats tests/check-reuse-lock.bats`
+    - Requirements: R4.9, R4.12
+    - Quality: Q1, Q2, Q3, Q8
+
+  - [ ] 12.2 - The lock wait always ends, and release removes only its own lock
+    - Context:
+      - Files: `scripts/check-reuse.sh` (`ledger_lock`, `ledger_unlock`, `cleanup`), `tests/check-reuse-concurrency.bats`, `tests/check-reuse-lock.bats`, `.draft/reports/tech-review-11.2.md` (W1, I6)
+    - Objective: a stale lock that cannot be broken ends the wait with a warning, and a run whose lock was broken as stale never removes the new holder's lock
+    - ToDo:
+      - **Test:** copy the authored test from `.draft/authored-tests/tests/check-reuse-lock-release.bats`.
+      - **Give up on an unmovable stale lock:** when the stale lock cannot be moved aside and is still there and still stale, `ledger_lock` returns 1 instead of resetting its tries.
+      - **Release checks the token:** `ledger_unlock` and `cleanup` remove `owner` and the directory only while `owner` still holds this run's token.
+    - Tests: Integration · `tests/check-reuse-lock-release.bats` — a stale lock in a ledger directory the runner cannot write ends the wait within 15 s, warns that the result was not recorded, and keeps the check's verdict and exit code; a run whose lock was broken as stale and taken by another holder leaves that holder's `ledger.lock` and `owner` in place when it releases
+    - Validation: `bats tests/check-reuse-lock-release.bats tests/check-reuse-lock.bats tests/check-reuse-concurrency.bats`
+    - Requirements: R4.10, R4.11
+    - Quality: Q1, Q2, Q3, Q8
+
+  - [ ] 12.3 - The whole local check
+    - Context:
+      - Files: `RELEASING.md` (the local recipe)
+    - Objective: the hardened lock joins a suite that passes as a whole
+    - ToDo:
+      - **Run** `shellcheck scripts/*.sh bin/*` and `bats tests/` as a normal user.
+      - **Record each result.** Fix a red in the owning sub-task's files, never by weakening a check.
+    - Tests: None — verification only; it runs the whole suite
+    - Validation: `shellcheck scripts/*.sh bin/* && bats tests/`
+    - Quality: Q1, Q3
+
+  - Commit: "fix(030): void every dropped non-PASS, bound the voids, end the lock wait and release only our own lock"
 
 ## Quality Gates
 

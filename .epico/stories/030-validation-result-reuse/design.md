@@ -3,12 +3,13 @@ story: 030-validation-result-reuse
 type: feature
 scale: full
 engineering: project
-version: 2
+version: 3
 created: 2026-11-04
-last-refined: 2026-11-04
+last-refined: 2026-11-05
 history:
   - v1: Initial story
   - v2: Refine after the run - R2.15, R2.16 and R4.8 added; the design describes the fingerprint, key, ledger lock and run as built; Task 10 adds regression guards for the review findings
+  - v3: Refine after validation fixes round 1 - R4.8 reworded, R4.9 to R4.12 added; the design's Ledger describes the owner token and void markers; Task 12 hardens the ledger lock
 status: in-progress
 ---
 
@@ -160,8 +161,18 @@ The `fingerprint` key in the output is filled whenever it can be computed, in ev
 
 - **Location:** `$(git rev-parse --path-format=absolute --git-common-dir)/epico/reuse/`.
 - **`ledger.json`:** `{"version": 1, "entries": {key: {command, result, fingerprint, at, secs}}}`, capped at **2000 entries**: the oldest `at` of the *other* entries is dropped first, and the entry just written never is, whatever its timestamp says.
-- **The directory also holds** `ledger.lock/` (a lock directory, below), temp files `ledger.XXXXXX` and `shadow.XXXXXX`, and set-aside copies. All of it is under the git directory, so none of it is part of the fingerprint.
-- **The read-modify-write runs under a `mkdir` lock** (`ledger.lock`), because parallel runs share the ledger and a slow run could write back the ledger it read before a newer FAIL was recorded, putting a stale PASS back in play. It waits about 5 s; a lock older than a minute belonged to a killed run and is broken; one that cannot be taken means the result is not recorded, with a warning. `mkdir` needs no flock, which is absent on macOS.
+- **The directory also holds** `ledger.lock/` (a lock directory, below) with its `owner` token, `void.<key>` markers (below), temp files `ledger.XXXXXX` and `shadow.XXXXXX`, and set-aside copies. All of it is under the git directory, so none of it is part of the fingerprint.
+- **The read-modify-write runs under a `mkdir` lock** (`ledger.lock`), because parallel runs share the ledger and a slow run could write back the ledger it read before a newer FAIL was recorded, putting a stale PASS back in play. `mkdir` needs no flock, which is absent on macOS.
+  - **The holder names itself:** right after its `mkdir` it writes a token (pid and `$RANDOM`) to `ledger.lock/owner`.
+  - **The wait counts one holder:** about 5 s (50 tries, 0.1 s apart), restarted whenever the owner token changes, so a queue of writers handing the lock on never makes a newer FAIL give up. A lock with one owner, or none, past the budget is given up on.
+  - **A stale lock** — older than a minute — belonged to a killed run and is broken. One that cannot be moved aside (the directory is not writable) is given up on, never waited on again (R4.10).
+  - **Release** removes `owner`, then the directory, and only while `owner` still holds this run's token: a run whose lock was broken as stale leaves the new holder's lock alone (R4.11). `cleanup` releases the same way on a signal.
+  - **A lock that cannot be taken** means the result is not recorded, with a warning, and a non-PASS voids its key.
+- **Void markers (`void.<key>`)** keep a dropped non-PASS from leaving an older PASS reusable (R4.9):
+  - **Made** when a non-PASS is not recorded — the lock was given up on, or the write under the lock failed (`mktemp`, `jq` or `mv`). One empty file, written without the lock, with `true` and never `:` (a failed redirection on a special builtin ends a POSIX-mode shell). A marker that cannot be written is named in the warning.
+  - **Read** by `prepare`: a voided key is no hit, for `run`, `lookup` and shadow's `would_reuse` alike, and its `reason` says the key is void.
+  - **Cleared** by the key's next locked write, unless the marker is newer than that write's lock — a FAIL that waited on this very write keeps its void.
+  - **Bounded:** every locked write removes the markers whose key has no ledger entry (R4.12), so there are never more markers than entries.
 - **Only the locked write mutates the ledger.** `lookup` and the read that precedes a run never set an unreadable ledger aside; `run` does it inside the lock, right before it records.
 - **An unreadable ledger** — invalid JSON, a wrong shape, or a `version` other than 1 — is never overwritten in place. It is renamed to `ledger.json.unreadable-<UTC timestamp>`, a name that never replaces an earlier set-aside copy, and a fresh ledger starts empty.
 - **`shadow.log`:** JSON lines `{at, command, key, would_reuse, result, secs}`, capped at **5000 lines**; the oldest are dropped first.
@@ -269,6 +280,7 @@ sequenceDiagram
 - **`profile --detect` meets a malformed manifest or no git work tree:** it skips what it cannot read (the `packageManager` probe; the inputs), warns, and still prints a profile with exit 0.
 - **`lookup` is unusable inside `validate-run.sh --only`:** the entry is re-run.
 - **Two writers at once:** serialised by the ledger lock (see Ledger). A lost update is not always the safe direction: an older PASS written back over a newer FAIL for the same key would be reused in mode `on`.
+- **A non-PASS that cannot be recorded** (the lock given up on, a failed write under it): warn, keep the verdict and exit code, and void the key, so its older PASS is not reused (R4.9).
 - **The command cannot be started** (no `setsid` or `timeout`, no temp file): FAIL with exit 126, and nothing is recorded, so it can never replace a real PASS.
 - **`stats` on an unreadable or garbled shadow log:** lines that are not objects are skipped, a non-numeric `secs` counts as nothing, an unreadable log gives zeros with a warning. It always prints its JSON.
 - **Timeout:** exit 124, mapped to FAIL with evidence `timed out after <s>s`, as validate-run does today.
@@ -295,6 +307,7 @@ sequenceDiagram
   - **Key changes** when an `inputs` file changes, when a probe's output changes, and when the profile changes.
   - **Decisions:** the decision table rows (off, shadow, on hit/miss, never, `--fresh`, FAIL never reused).
   - **Caps:** ledger cap 2000, shadow.log cap 5000.
+  - **The lock and the void** (`tests/check-reuse-lock.bats`, `tests/check-reuse-void.bats`, `tests/check-reuse-lock-release.bats`): a queue of holders never makes a FAIL give up; a dropped non-PASS voids its key on every path; a void is cleared, named and bounded; a stale lock that cannot be moved ends the wait; release leaves another holder's lock alone.
   - **Contract:** usage errors exit 2 with no JSON; JSON contract keys.
   - **`profile --detect`** on fixture manifests.
   - **`stats`** counts.
@@ -354,7 +367,7 @@ sequenceDiagram
 - **GOTCHA: submodules** — `git add -A` records a submodule's commit, not its uncommitted changes, so a dirty submodule would fingerprint as clean. **Fix:** after `add -A`, check each gitlink in the temp index with `git -C <path> status --porcelain` and produce no fingerprint when one is dirty. That covers submodules and nested repositories that are not registered as submodules, which `git status` of the outer repository does not show.
 - **GOTCHA: hashing inputs** — `sha256sum` is GNU, macOS ships `shasum`. **Fix:** use `git hash-object --no-filters -- <path>`, which is git-only, portable, and writes no object without `-w`.
 - **GOTCHA: timing** — `date +%s%N` is unsupported on macOS. **Fix:** measure with bash `SECONDS` and stamp with `date -u +%Y-%m-%dT%H:%M:%SZ`.
-- **GOTCHA: concurrent writers** — parallel Executors in worktrees write the same ledger. flock is util-linux, outside the constitution's bash+jq+git, and absent on macOS. **Fix:** a `mkdir` lock around the read-modify-write, and a temp file in the same directory then `mv`, so the file is never torn. Without the lock a slow writer can put an older PASS back over a newer FAIL; that is a stale PASS reused in mode `on`, not a harmless lost update.
+- **GOTCHA: concurrent writers** — parallel Executors in worktrees write the same ledger. flock is util-linux, outside the constitution's bash+jq+git, and absent on macOS. **Fix:** a `mkdir` lock around the read-modify-write, and a temp file in the same directory then `mv`, so the file is never torn. Without the lock a slow writer can put an older PASS back over a newer FAIL; that is a stale PASS reused in mode `on`, not a harmless lost update. A wait that counts tries whoever holds the lock gives up on a queue of live writers (the CI mirror's 7 parallel runs did), so the wait counts one holder, and a result that is still not recorded voids its key.
 - **GOTCHA: moving validate-run's run semantics** — they must move intact (`setsid --fork --wait`, `timeout`, process-group kill, output to a file, not a pipe). validate-run.sh's own comment records a `cargo run &` holding a pipe open until the timeout (300 s lost).
 - **GOTCHA: profile format** — YAML would need yq, which the constitution does not allow. **Fix:** the profile is JSON.
 - **GOTCHA: ambiguous gate prefix** — two `Q5` lines are closed by `gate:<prefix>`. **Fix:** the prefixes must differ before the colon (`(api)`, `(checkout)`), or `close-subtask.sh` refuses the ambiguous match.
